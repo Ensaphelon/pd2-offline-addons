@@ -205,6 +205,42 @@ void __cdecl calls_at(int index)
     if (index == draw_on) calls_draw_test_box();
 }
 
+/* World to screen. The camera is centred on the player, so a point's place on screen follows
+   from how far it is from the player: D2's ground is isometric, one subtile being 16 pixels
+   across and 8 down. Drawn at a FIXED point in the world rather than a fixed point on screen —
+   if the transform is right the box stays on its patch of ground while the player walks, and if
+   it is wrong it slides, which is a difference nobody can mistake. */
+typedef void *(__stdcall *get_player_fn)(void);
+typedef int (__fastcall *get_coord_fn)(void *unit);
+
+#define OFF_GETPLAYERUNIT 0xA4D60
+#define OFF_GETUNITX      0x1630
+#define OFF_GETUNITY      0x1660
+#define OFF_SCREENSIZEX   0xDBC48
+#define OFF_SCREENSIZEY   0xDBC4C
+
+static int world_to_screen(int world_x, int world_y, int *out_x, int *out_y)
+{
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return 0;
+    const BYTE *base = (const BYTE *)client;
+    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
+    get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
+    get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
+
+    void *player = get_player();
+    if (!player) return 0;
+    int px = get_x(player), py = get_y(player);
+    DWORD width = 800, height = 600;
+    safe_read(base + OFF_SCREENSIZEX, &width, 4);
+    safe_read(base + OFF_SCREENSIZEY, &height, 4);
+
+    int dx = world_x - px, dy = world_y - py;
+    *out_x = (int)(width / 2) + (dx - dy) * 16;
+    *out_y = (int)(height / 2) + (dx + dy) * 8;
+    return 1;
+}
+
 void calls_draw_test_box(void)
 {
     static gfx_draw6_fn draw;
@@ -216,10 +252,24 @@ void calls_draw_test_box(void)
         log_line("draw: D2gfx #10014 DrawRectangle at %p", (void *)draw);
         if (!draw) return;
     }
-    /* Two boxes: one solid, one blended, so a wrong transparency cannot hide both. Still no
-       position maths — the coordinates come next, and one variable at a time. */
-    draw(120, 100, 280, 240, 0x9A, 0);
-    draw(320, 100, 480, 240, 0x9A, 5);
+    /* A spot in the world, chosen once: wherever the player was standing the first time this
+       ran. It should stay put on the ground from then on. */
+    static int anchor_x, anchor_y, anchored;
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return;
+    if (!anchored) {
+        get_player_fn get_player = (get_player_fn)((const BYTE *)client + OFF_GETPLAYERUNIT);
+        get_coord_fn get_x = (get_coord_fn)((const BYTE *)client + OFF_GETUNITX);
+        get_coord_fn get_y = (get_coord_fn)((const BYTE *)client + OFF_GETUNITY);
+        void *player = get_player();
+        if (!player) return;
+        anchor_x = get_x(player); anchor_y = get_y(player);
+        anchored = 1;
+        log_line("draw: anchored to world (%d, %d) — the box should stay there", anchor_x, anchor_y);
+    }
+    int sx, sy;
+    if (!world_to_screen(anchor_x, anchor_y, &sx, &sy)) return;
+    draw(sx - 20, sy - 60, sx + 20, sy, 0x9A, 5);
 }
 
 /* ---------------------------------------------------------------------------------------- */
