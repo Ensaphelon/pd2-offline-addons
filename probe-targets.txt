@@ -1,11 +1,15 @@
-# One 32-bit value per line, then a label. Decimal or 0xHEX.
-# These are item guids out of the player's own save: rare numbers, so a hit is the item itself
-# rather than a coincidence. What we want to see in the dump around each one is whether our
-# catalog's id for that item (274 / 115 / 93) is nearby.
-0x6F86EE84 Dwarf Star guid        (unique, our id 274, code rin)
-0xDD096849 Goldwrap guid          (unique, our id 115, code tbl)
-0x516C8FB8 M'avina's Tenet guid   (set, our id 93, code zvb, UNIDENTIFIED)
-# And the ids themselves, to see where else they live.
-274 Dwarf Star catalog id
-93 M'avina's Tenet catalog id
+# ---- sounds to audition -------------------------------------------------------------------
+# sound <a0> <a1> <a2> <a3> <a4>  <label>
+# Five arguments, because PD2's exported play function takes five and nobody has written down
+# which is which. F10 plays the next line each press. A sound that comes out at the wrong volume
+# or ignores the LOOT FILTER slider means the arguments are in the wrong order, not that the
+# sound is wrong — that is what these variations are for.
+sound 0 14 0 0 0    questdone, id in arg1
+sound 14 0 0 0 0    questdone, id in arg0
+sound 0 14 255 0 0  questdone, id in arg1, 255 in arg2
+sound 0 45 0 0 0    light shaft, id in arg1
+sound 0 40 0 0 0    spotlight, id in arg1
+sound 0 4718 0 0 0  the alert kassahi uses for rare maps, id in arg1
+
+# ---- memory probe -------------------------------------------------------------------------
 player Rendan

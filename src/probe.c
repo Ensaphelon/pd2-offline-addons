@@ -37,6 +37,20 @@ static int target_count;
 static const BYTE *self_start, *self_end;
 static char player_name[32];
 
+/* PD2 exports exactly one function, and it is this: the call its own loot filter uses so that a
+   drop alert obeys the LOOT FILTER slider in Sound Options rather than playing at full blast
+   outside every volume control the game offers. Anything we play has to go through it for the
+   same reason.
+   Five arguments, and which is which is not documented anywhere — so they come from the config
+   file and are auditioned in game rather than guessed at here. */
+typedef int (__stdcall *play_sound_fn)(int, int, int, int, int);
+static play_sound_fn play_sound;
+
+#define MAX_SOUNDS 16
+typedef struct { int arg[5]; char label[64]; } sound_probe;
+static sound_probe sounds[MAX_SOUNDS];
+static int sound_count, sound_next;
+
 #define CHUNK 0x10000
 static BYTE chunk[CHUNK];
 
@@ -69,6 +83,16 @@ static void load_targets(void *module)
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        {
+            sound_probe s;
+            memset(&s, 0, sizeof(s));
+            int got = sscanf(line, "sound %i %i %i %i %i %63[^\r\n]",
+                             &s.arg[0], &s.arg[1], &s.arg[2], &s.arg[3], &s.arg[4], s.label);
+            if (got >= 5) {
+                if (sound_count < MAX_SOUNDS) sounds[sound_count++] = s;
+                continue;
+            }
+        }
         if (sscanf(line, "player %31[^\r\n]", player_name) == 1) {
             log_line("probe: the character to anchor on is \"%s\"", player_name);
             continue;
@@ -566,8 +590,31 @@ void probe_run(void)
     log_line("=== probe pass done in %lu ms ===", (unsigned long)(GetTickCount() - started));
 }
 
+/* Plays the next configured line, so one key press walks the whole list and the log says which
+   one was just heard. Finding both the right sound and the right argument order is a listening
+   exercise, and this is the shortest loop between a guess and hearing it. */
+void probe_play_next_sound(void)
+{
+    if (!play_sound) { log_line("sound: ProjectDiablo.dll has not given us the function"); return; }
+    if (!sound_count) { log_line("sound: no 'sound ...' lines in the config"); return; }
+    sound_probe *s = &sounds[sound_next % sound_count];
+    log_line("sound: playing (%d, %d, %d, %d, %d) — %s",
+             s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4], s->label);
+    play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);
+    sound_next++;
+}
+
 void probe_init(void *module)
 {
+    HMODULE pd2 = GetModuleHandleA("ProjectDiablo.dll");
+    if (pd2) {
+        play_sound = (play_sound_fn)GetProcAddress(
+            pd2, "_D2Client_PlaySoundWithCustomVolumeOrPriority@20");
+        log_line("sound: ProjectDiablo.dll at %p, function %s", (void *)pd2,
+                 play_sound ? "found" : "NOT found");
+    } else {
+        log_line("sound: ProjectDiablo.dll is not loaded");
+    }
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQuery(module, &mbi, sizeof(mbi))) {
         self_start = (const BYTE *)mbi.AllocationBase;
