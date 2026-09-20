@@ -231,9 +231,10 @@ static int world_to_screen(int world_x, int world_y, int *out_x, int *out_y)
     void *player = get_player();
     if (!player) return 0;
     int px = get_x(player), py = get_y(player);
-    DWORD width = 800, height = 600;
-    safe_read(base + OFF_SCREENSIZEX, &width, 4);
-    safe_read(base + OFF_SCREENSIZEY, &height, 4);
+    DWORD width = *(const DWORD *)(base + OFF_SCREENSIZEX);
+    DWORD height = *(const DWORD *)(base + OFF_SCREENSIZEY);
+    if (width < 320 || width > 4096) width = 800;
+    if (height < 200 || height > 4096) height = 600;
 
     int dx = world_x - px, dy = world_y - py;
     *out_x = (int)(width / 2) + (dx - dy) * 16;
