@@ -161,7 +161,9 @@ static void wanted_reload(void)
     if (!f) return;
     memset(wanted, 0, sizeof(wanted));
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "type %i", &number) != 1) continue;
+        /* %d, not %i: %i reads a leading zero as octal, and a list of numbers written
+           by another program is not the place to inherit that. */
+        if (sscanf(line, "type %d", &number) != 1) continue;
         if (number < 0 || number >= WANTED_MAX) continue;
         wanted[number >> 3] |= (BYTE)(1 << (number & 7));
         found++;
