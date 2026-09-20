@@ -11,6 +11,7 @@
 void probe_init(void *module);
 void probe_run(void);
 void probe_play_line(int index);
+BOOL frame_hook_install(void);
 
 /* One F-key per configured line: F1 plays line 1, F2 line 2, and so on. Sequences and paced
    presses both failed for the same reason — they asked the listener to keep time. A key that
@@ -34,12 +35,17 @@ static DWORD WINAPI bootstrap(LPVOID module)
     DWORD attached = GetTickCount();
     BOOL auto_done = FALSE;
     BOOL was_down[12] = {0};
+    BOOL hooked = FALSE;
     for (;;) {
         if (!auto_done && GetTickCount() - attached >= AUTO_PASS_MS) {
             auto_done = TRUE;
             log_line("(automatic memory pass)");
             probe_run();
         }
+        /* D2Gfx and the Glide wrapper both load after us, so the hook goes in once they are
+           there rather than at startup. */
+        if (!hooked) hooked = frame_hook_install();
+
         for (int i = 0; i < 12; i++) {
             BOOL down = (GetAsyncKeyState(VK_F1 + i) & 0x8000) != 0;
             if (down && !was_down[i]) probe_play_line(i);

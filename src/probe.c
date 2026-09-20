@@ -647,6 +647,44 @@ void probe_play_line(int index)
     play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);
 }
 
+/* Runs on every rendered frame. Counting the grail candidates lying in view is the cheapest
+   thing that proves the whole chain works — the hook fires, the unit table reads, the items are
+   there and their quality and identity come out — before a single pixel is drawn. */
+void frame_tick(void)
+{
+    static DWORD last;
+    DWORD now = GetTickCount();
+    if (now - last < 2000) return;     /* the log is for a person, not for 60fps */
+    last = now;
+
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return;
+    const BYTE *table = (const BYTE *)client + OFF_D2CLIENT_UNIT_TABLE_ITEMS;
+    int on_ground = 0, uniques = 0, sets = 0;
+    for (int bucket = 0; bucket < UNIT_BUCKETS; bucket++) {
+        DWORD address = 0;
+        if (!safe_read(table + bucket * 4, &address, 4)) continue;
+        int depth = 0;
+        while (address && depth++ < 64) {
+            unit_head unit;
+            if (!read_unit(address, &unit) || unit.type != 4) break;
+            if (unit.mode == 3) {
+                DWORD quality = 0;
+                safe_read((const void *)(UINT_PTR)unit.item_data, &quality, 4);
+                on_ground++;
+                if (quality == 7) uniques++;
+                else if (quality == 5) sets++;
+            }
+            DWORD next = 0;
+            if (!safe_read((const void *)(UINT_PTR)(address + 0xEC), &next, 4)) break;
+            address = next;
+        }
+    }
+    if (on_ground)
+        log_line("frame: %d item(s) on the ground right now — %d unique, %d set",
+                 on_ground, uniques, sets);
+}
+
 void probe_init(void *module)
 {
 
