@@ -259,6 +259,30 @@ BOOL server_watch_install(void)
     return game_hooks > 0;
 }
 
+/* Keys turned out to be unreliable — macOS took F11 before the game ever saw it — so this runs
+   on a timer instead. Every window, whatever moved a little is printed and the baseline resets,
+   so casting a portal at any moment lands inside some window and shows up by itself. */
+void server_window(void)
+{
+    static DWORD last;
+    DWORD now = GetTickCount();
+    if (!game_hooks && !server_watch_install()) return;
+    if (now - last < 4000) return;
+    last = now;
+
+    int shown = 0;
+    for (LONG threshold = 1; threshold <= 6 && shown < 24; threshold++) {
+        for (int i = 0; i < game_hooks && shown < 24; i++) {
+            LONG moved = game_counts[i] - game_baseline[i];
+            if (moved != threshold) continue;
+            if (!shown) log_line("server: in the last window these moved a little —");
+            log_line("    D2Common #%u  +%ld", game_ordinals[i], moved);
+            shown++;
+        }
+    }
+    for (int i = 0; i < game_hooks; i++) game_baseline[i] = game_counts[i];
+}
+
 void server_baseline(void)
 {
     if (!game_hooks && !server_watch_install()) { log_line("server: not watching yet"); return; }
