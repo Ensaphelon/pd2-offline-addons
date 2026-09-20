@@ -20,7 +20,7 @@
  * back is a frequency table: the one called once per frame is where a renderer belongs, and the
  * ones called hundreds of times are the primitives themselves. */
 
-#define MAX_HOOKS 96
+#define MAX_HOOKS 768
 
 static void *originals[MAX_HOOKS];
 static volatile LONG counts[MAX_HOOKS];
@@ -210,6 +210,79 @@ void calls_draw_test_box(void)
     }
     /* A fixed box, no position maths yet — one variable at a time. */
     draw(120, 100, 280, 380, 0x54, 5);
+}
+
+/* ---------------------------------------------------------------------------------------- */
+/* The server's side. In single player D2Game runs in this same process, and creating an object
+   is its job — the client only draws what it is told about. D2Game reaches almost everything
+   through D2Common, 716 imports of them, and which one makes an object is written down nowhere.
+
+   So: count them all, take a baseline, do something in game that certainly creates an object —
+   casting a town portal — and see which counters moved. A needle hunt becomes a subtraction. */
+
+static void *game_originals[MAX_HOOKS];
+static volatile LONG game_counts[MAX_HOOKS];
+static LONG game_baseline[MAX_HOOKS];
+static WORD game_ordinals[MAX_HOOKS];
+static void **game_slots[MAX_HOOKS];
+static int game_hooks;
+static BYTE *game_thunks;
+
+BOOL server_watch_install(void)
+{
+    if (game_hooks) return TRUE;
+    HMODULE game = GetModuleHandleA("D2Game.dll");
+    if (!game) return FALSE;
+
+    static WORD wanted[MAX_HOOKS];
+    int count = collect_ordinals(game, "D2Common.dll", wanted, MAX_HOOKS);
+    if (!count) { log_line("server: D2Game imports no D2Common ordinals"); return FALSE; }
+
+    game_thunks = (BYTE *)VirtualAlloc(NULL, count * 16, MEM_COMMIT | MEM_RESERVE,
+                                       PAGE_EXECUTE_READWRITE);
+    if (!game_thunks) { log_line("server: could not allocate thunks"); return FALSE; }
+
+    for (int i = 0; i < count; i++) {
+        BYTE *thunk = game_thunks + i * 16;
+        /* Counting only — no call back into us. 716 of these run on the server thread and the
+           point is to disturb nothing. */
+        write_thunk(thunk, i, &game_counts[i], &game_originals[i]);
+        void *previous = NULL;
+        void **slot = redirect_ordinal(game, "D2Common.dll", wanted[i], thunk, &previous);
+        if (!slot) continue;
+        game_originals[i] = previous;
+        game_slots[i] = slot;
+        game_ordinals[i] = wanted[i];
+        game_hooks++;
+    }
+    log_line("server: watching %d of D2Game's %d calls into D2Common", game_hooks, count);
+    return game_hooks > 0;
+}
+
+void server_baseline(void)
+{
+    if (!game_hooks && !server_watch_install()) { log_line("server: not watching yet"); return; }
+    for (int i = 0; i < game_hooks; i++) game_baseline[i] = game_counts[i];
+    log_line("server: baseline taken over %d calls — now do the thing in game", game_hooks);
+}
+
+void server_delta(void)
+{
+    if (!game_hooks) { log_line("server: not watching"); return; }
+    log_line("server: what moved since the baseline —");
+    int shown = 0;
+    /* Smallest movements first: a function called once for one new object is the interesting
+       kind, and the ones that tick thousands of times are the game simply running. */
+    for (LONG threshold = 1; threshold <= 4 && shown < 40; threshold++) {
+        for (int i = 0; i < game_hooks && shown < 40; i++) {
+            LONG moved = game_counts[i] - game_baseline[i];
+            if (moved != threshold) continue;
+            log_line("    D2Common #%u moved by %ld", game_ordinals[i], moved);
+            shown++;
+        }
+    }
+    if (!shown) log_line("    nothing moved by four or less");
+    log_line("server: done");
 }
 
 void calls_watch_remove(void)
