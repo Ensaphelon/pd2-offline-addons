@@ -10,11 +10,11 @@
 
 void probe_init(void *module);
 void probe_run(void);
-void probe_play_next_sound(void);
-void probe_play_sequence(void);
+void probe_play_line(int index);
 
-#define PROBE_KEY VK_F9
-#define SOUND_KEY VK_F10
+/* One F-key per configured line: F1 plays line 1, F2 line 2, and so on. Sequences and paced
+   presses both failed for the same reason — they asked the listener to keep time. A key that
+   always plays the same thing can be pressed whenever, as often as you like. */
 #define AUTO_PASS_MS 30000
 
 static DWORD WINAPI bootstrap(LPVOID module)
@@ -22,9 +22,8 @@ static DWORD WINAPI bootstrap(LPVOID module)
     log_init(module);
     log_line("pd2-holy-grail probe attached");
     probe_init(module);
-    log_line("a pass runs by itself %d seconds from now; F9 takes another one any time",
+    log_line("F1..F12 each play one configured line; the memory pass runs by itself in %d seconds",
              AUTO_PASS_MS / 1000);
-    log_line("F10 plays the whole configured sequence, spaced out");
 
     /* The automatic pass is the one that matters: a keyboard that does not send F9 the way the
        game expects would otherwise leave us with an empty log and no idea why. F9 stays as a way
@@ -34,21 +33,19 @@ static DWORD WINAPI bootstrap(LPVOID module)
        build is that it changes nothing about how the game runs. */
     DWORD attached = GetTickCount();
     BOOL auto_done = FALSE;
-    BOOL was_down = FALSE, sound_was_down = FALSE;
+    BOOL was_down[12] = {0};
     for (;;) {
         if (!auto_done && GetTickCount() - attached >= AUTO_PASS_MS) {
             auto_done = TRUE;
-            log_line("(automatic pass)");
+            log_line("(automatic memory pass)");
             probe_run();
         }
-        BOOL down = (GetAsyncKeyState(PROBE_KEY) & 0x8000) != 0;
-        if (down && !was_down) probe_run();
-        was_down = down;
-
-        BOOL sound_down = (GetAsyncKeyState(SOUND_KEY) & 0x8000) != 0;
-        if (sound_down && !sound_was_down) probe_play_sequence();
-        sound_was_down = sound_down;
-        Sleep(50);
+        for (int i = 0; i < 12; i++) {
+            BOOL down = (GetAsyncKeyState(VK_F1 + i) & 0x8000) != 0;
+            if (down && !was_down[i]) probe_play_line(i);
+            was_down[i] = down;
+        }
+        Sleep(40);
     }
     return 0;   /* not reached; the thread lives as long as the game does */
 }

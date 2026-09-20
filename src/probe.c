@@ -624,49 +624,23 @@ static void resolve_play_sound(void)
     }
 }
 
-/* One press plays the WHOLE list, with a gap between each. Asking a person to pace key presses
-   turned out to be asking too much — the log showed eight sounds go by in three seconds, a sixth
-   of a second apart and overlapping. The gap belongs in here, not in somebody's fingers. */
-#define SOUND_GAP_MS 1600
-
-void probe_play_sequence(void)
+/* One F-key per line: F1 plays the first configured sound, F2 the second, and so on. */
+void probe_play_line(int index)
 {
     resolve_play_sound();
     if (!play_sound) return;
-    if (!sound_count) { log_line("sound: no 'sound ...' lines in the config"); return; }
-    log_line("sound: playing all %d line(s), %d ms apart — listen for the pattern",
-             sound_count, SOUND_GAP_MS);
-    for (int i = 0; i < sound_count; i++) {
-        sound_probe *s = &sounds[i];
-        if (s->arg[0] != 0 && s->arg[0] < 0x10000) {
-            log_line("  %d/%d SKIPPED, arg0=%d is not a pointer", i + 1, sound_count, s->arg[0]);
-            continue;
-        }
-        log_line("  %d/%d (%d, %d, %d, %d, %d) — %s", i + 1, sound_count,
-                 s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4], s->label);
-        play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);
-        Sleep(SOUND_GAP_MS);
-    }
-    log_line("sound: sequence done");
-}
-
-void probe_play_next_sound(void)
-{
-    resolve_play_sound();
-    if (!play_sound) return;
-    if (!sound_count) { log_line("sound: no 'sound ...' lines in the config"); return; }
-    sound_probe *s = &sounds[sound_next % sound_count];
+    if (index >= sound_count) return;
+    sound_probe *s = &sounds[index];
     /* arg0 is a pointer the callee dereferences. A small integer there is not a unit, it is a
        crash — which is exactly how this was learned. */
     if (s->arg[0] != 0 && s->arg[0] < 0x10000) {
-        log_line("sound: refusing arg0=%d — it is a pointer, and that is not one", s->arg[0]);
-        sound_next++;
+        log_line("F%d: refusing arg0=%d — it is a pointer, and that is not one",
+                 index + 1, s->arg[0]);
         return;
     }
-    log_line("sound: playing (%d, %d, %d, %d, %d) — %s",
+    log_line("F%d: (%d, %d, %d, %d, %d) — %s", index + 1,
              s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4], s->label);
     play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);
-    sound_next++;
 }
 
 void probe_init(void *module)
