@@ -40,6 +40,9 @@ static volatile LONG draw_on = -1;
 void beam_draw(void);
 int beam_capturing(void);
 void beam_inspect(int ordinal, const DWORD *args);
+int beam_tracing(void);
+void beam_trace(int ordinal);
+int beam_draw_on(void);
 
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
@@ -213,9 +216,16 @@ typedef void (__stdcall *gfx_draw6_fn)(int, int, int, int, int, int);
 void __cdecl calls_at(int index, const DWORD *args)
 {
     last_index = index;
-    if (beam_capturing() && index >= 0 && index < hook_count)
-        beam_inspect(ordinals[index], args);
-    if (index == draw_on) beam_draw();
+    if (index < 0 || index >= hook_count) return;
+    if (beam_capturing()) beam_inspect(ordinals[index], args);
+    if (beam_tracing()) beam_trace(ordinals[index]);
+
+    /* Which call the light goes out on. Left alone that is the last one of the frame, which is
+       also after the name plates and the cursor; a chosen ordinal puts it earlier. */
+    {
+        int wanted = beam_draw_on();
+        if (wanted ? ordinals[index] == wanted : index == draw_on) beam_draw();
+    }
 }
 
 /* ---------------------------------------------------------------------------------------- */

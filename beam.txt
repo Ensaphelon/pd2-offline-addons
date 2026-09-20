@@ -12,3 +12,6 @@ on      1
 test    0         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
 capture 0         # frames to watch the game's own drawing calls for; set again to look afresh
 colour  0         # its last argument, a small number — the game passes 0 or 1
+trace   1         # print the shape of one frame to the log
+drawon  0         # the D2Gfx ordinal to draw on; 0 means the last call of the frame
+mark    1         # a dot at the exact point the transform works out

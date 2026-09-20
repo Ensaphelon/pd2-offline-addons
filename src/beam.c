@@ -87,10 +87,15 @@ static struct {
                      row of blends below */
     int capture;  /* frames to watch the game's own calls for, looking for the one that draws
                      a cell — set it again to take another look without restarting */
+    int trace;    /* print the shape of one frame: which D2gfx call, and how far into the frame */
+    int drawon;   /* the ordinal to draw on; 0 means the last call of the frame */
+    int mark;     /* a dot at the exact point the transform works out, to see it against the
+                     item's own sprite */
     int on;
-} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1};
+} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1, 0, 1, 1};
 
 static void capture_arm(void);
+static void trace_arm(void);
 static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y);
 
 static char config_path[MAX_PATH];
@@ -136,12 +141,16 @@ void beam_reload(void)
         if (sscanf(line, "dy %i", &value) == 1) { cfg.dy = value; continue; }
         if (sscanf(line, "test %i", &value) == 1) { cfg.test = value; continue; }
         if (sscanf(line, "capture %i", &value) == 1) { cfg.capture = value; capture_arm(); continue; }
+        if (sscanf(line, "trace %i", &value) == 1) { cfg.trace = value; trace_arm(); continue; }
+        if (sscanf(line, "drawon %i", &value) == 1) { cfg.drawon = value; continue; }
+        if (sscanf(line, "mark %i", &value) == 1) { cfg.mark = value; continue; }
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
-    log_line("beam: art=%d draw=#%d trans=%d bright=%d colour=%d rate=%d dx=%d dy=%d anchor=%d "
-             "test=%d capture=%d on=%d", cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.colour,
-             cfg.rate, cfg.dx, cfg.dy, cfg.anchor, cfg.test, cfg.capture, cfg.on);
+    log_line("beam: art=%d draw=#%d drawon=#%d trans=%d bright=%d colour=%d rate=%d dx=%d dy=%d "
+             "anchor=%d test=%d mark=%d capture=%d trace=%d on=%d", cfg.art, cfg.ordinal,
+             cfg.drawon, cfg.trans, cfg.bright, cfg.colour, cfg.rate, cfg.dx, cfg.dy, cfg.anchor,
+             cfg.test, cfg.mark, cfg.capture, cfg.trace, cfg.on);
 }
 
 /* One CellFile per sprite, built the first time it is wanted. The buffer has to stay: InitCellFile
@@ -195,6 +204,73 @@ void beam_inspect(int ordinal, const DWORD *args)
              (unsigned long)a[3], (unsigned long)a[4], (unsigned long)a[5],
              (unsigned long)cell.width, (unsigned long)cell.height, (unsigned long)frame,
              (unsigned long)version);
+}
+
+/* The shape of one frame.
+ *
+ * Drawing on the frame's LAST call puts the light over everything the game drew after the world:
+ * the item's own name plate, and the mouse cursor. It also jitters while the character walks,
+ * because by then the view has already been moved on for the next frame. All three want the same
+ * thing — an earlier place in the frame — and which place that is, is a question about the order
+ * the game does its drawing in.
+ *
+ * Eleven thousand calls a frame is too many to print, but almost all of them are runs of the same
+ * ordinal, so only the changes are recorded: which call, and how many calls into the frame it
+ * came. That is the frame's structure on one screen. */
+static volatile LONG trace_left;
+static struct { WORD ordinal; DWORD at; } trace_seen[160];
+static int trace_count;
+static DWORD trace_calls;
+
+static void trace_arm(void)
+{
+    trace_count = 0;
+    trace_calls = 0;
+    trace_left = cfg.trace;
+}
+
+int beam_tracing(void)
+{
+    return trace_left > 0;
+}
+
+int beam_draw_on(void)
+{
+    return cfg.drawon;
+}
+
+void beam_trace(int ordinal)
+{
+    trace_calls++;
+    if (trace_count && trace_seen[trace_count - 1].ordinal == (WORD)ordinal) return;
+    if (trace_count >= (int)(sizeof(trace_seen) / sizeof(trace_seen[0]))) return;
+    trace_seen[trace_count].ordinal = (WORD)ordinal;
+    trace_seen[trace_count].at = trace_calls;
+    trace_count++;
+}
+
+static void trace_report(void)
+{
+    char line[256];
+    int used = 0;
+
+    if (trace_left <= 0) return;
+    trace_left = 0;
+    log_line("trace: one frame, %lu calls — ordinal@how-far-in", (unsigned long)trace_calls);
+    for (int i = 0; i < trace_count; i++) {
+        int wrote = snprintf(line + used, sizeof(line) - used, "%s#%u@%lu",
+                             used ? "  " : "    ", trace_seen[i].ordinal,
+                             (unsigned long)trace_seen[i].at);
+        if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) {
+            line[used] = 0;
+            log_line("%s", line);
+            used = 0;
+            i--;
+            continue;
+        }
+        used += wrote;
+    }
+    if (used) { line[used] = 0; log_line("%s", line); }
 }
 
 static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned int size,
@@ -382,11 +458,27 @@ static void report_transform(const BYTE *base)
              px, py, width, height, now[0], now[1], now[2], now[3], now[4]);
 }
 
+typedef void(__stdcall *draw_rect_fn)(int, int, int, int, int, int);
+
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
 {
     int x, y;
     if (!world_to_screen(base, world_x, world_y, &x, &y)) return;
-    draw_foot_at(x + cfg.dx, y + cfg.dy, tick);
+    x += cfg.dx;
+    y += cfg.dy;
+    draw_foot_at(x, y, tick);
+
+    /* Where the transform says the item is, as a solid dot, so it can be judged against the
+       item's own sprite rather than against its name plate. */
+    if (cfg.mark) {
+        static draw_rect_fn rect;
+        if (!rect) {
+            HMODULE gfx = GetModuleHandleA("D2gfx.dll");
+            if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
+            if (gfx) rect = (draw_rect_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10014));
+        }
+        if (rect) rect(x - 2, y - 2, x + 3, y + 3, 0xFF, 0);
+    }
 }
 
 /* Every item lying on the ground, out of the client's own unit table: six rows of 128 buckets,
@@ -398,7 +490,8 @@ void beam_draw(void)
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     tick++;
-    if (tick == 1) capture_arm();
+    if (tick == 1) { capture_arm(); trace_arm(); }
+    if (tick > 200) trace_report();
     report_transform((const BYTE *)client);
     if (capture_left > 0 && !--capture_left) log_line("capture: done looking");
 
