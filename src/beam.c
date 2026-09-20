@@ -60,6 +60,7 @@ static int safe_read(const void *at, void *into, SIZE_T bytes)
 #define OFF_VIEW_OFFSET 0x11C1F8  /* POINT: where the world's origin sits on screen */
 #define OFF_VIEW_DIVISOR 0xF16B0
 #define OFF_UNIT_TABLE 0x10A608
+#define UNIT_PATH 0x2C   /* and a player's path opens with x then y, each 16.16 fixed */
 #define OFF_MOUSEOFFSETY 0x11995C
 #define OFF_MOUSEOFFSETX 0x119960
 #define OFF_PANELOFFSETX 0x11B9A0
@@ -80,8 +81,8 @@ static struct {
     int colour;   /* the draw's last argument; the game passes small numbers here */
     int rate;     /* game frames per sprite frame */
     int dx, dy;   /* nudge, in pixels */
-    int anchor;   /* 0 the mouse origin, which follows the view when a panel slides it;
-                     1 relative to the player, which does not */
+    int anchor;   /* 0 the player's exact position plus the view's slide, 1 the mouse origin
+                     alone, 2 the player's rounded position alone */
     int test;     /* 1 draws one at a fixed spot on screen, so the art can be judged and the
                      draw proved safe without anything having to be dropped first; 2 draws the
                      row of blends below */
@@ -92,7 +93,7 @@ static struct {
     int mark;     /* a dot at the exact point the transform works out, to see it against the
                      item's own sprite */
     int on;
-} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1, 0, 1, 1};
+} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1, 0, 10054, 1};
 
 static void capture_arm(void);
 static void trace_arm(void);
@@ -129,7 +130,7 @@ void beam_reload(void)
             continue;
         }
         if (sscanf(line, "anchor %31s", word) == 1) {
-            cfg.anchor = !_stricmp(word, "player") ? 1 : 0;   /* anything else: mouse */
+            cfg.anchor = !_stricmp(word, "player") ? 2 : !_stricmp(word, "mouse") ? 1 : 0;
             continue;
         }
         if (sscanf(line, "trans %i", &value) == 1) { cfg.trans = value; continue; }
@@ -388,41 +389,80 @@ static void draw_sprite(void *cells, int frame, int x, int y)
     draw_cell(context, x, y, cfg.bright, cfg.trans, cfg.colour);
 }
 
-/* World to screen, settled by measurement rather than by a header.
+/* Where the player really is, to the fraction of a subtile.
  *
- * With the player at world 3993,5228 on a 1068x600 screen the transform needs an origin of
- * -20294,73468, and `GetMouseXOffset` returns exactly -20294. That is no coincidence: it is the
- * origin the game itself converts the mouse through, so it is the one that already knows the
- * view has slid. Opening the inventory moves it to -20027 — a quarter of the screen width, 267
- * pixels, which is precisely how far the world shifts to make room.
+ * `GetUnitX` truncates, and everything built on it inherits 16-pixel stairs. The path a player
+ * walks along keeps the fraction: x then y, each a 16.16 fixed-point number, at the front of the
+ * structure UnitAny+0x2C points at. */
+static int player_precise(const BYTE *base, int *out_x, int *out_y)
+{
+    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
+    void *player = get_player();
+    DWORD path = 0, x = 0, y = 0;
+
+    if (!player) return 0;
+    if (!safe_read((const BYTE *)player + UNIT_PATH, &path, 4) || path < 0x10000) return 0;
+    if (!safe_read((const void *)(UINT_PTR)path, &x, 4)) return 0;
+    if (!safe_read((const void *)(UINT_PTR)(path + 4), &y, 4)) return 0;
+    *out_x = (int)x;
+    *out_y = (int)y;
+    return 1;
+}
+
+/* World to screen.
  *
- * The y wants a constant 24 on top: `GetMouseYOffset` reads 73492 where 73468 is needed. The
- * variables at +0x119960 and +0x11995C hold the same pair but do NOT move when a panel opens,
- * which is what made them the wrong answer and the functions the right one.
+ * The camera is centred on the player and the ground is isometric: a subtile is sixteen pixels
+ * across and eight down. What took three goes to get right is WHICH player position to measure
+ * from.
  *
- * D2Client+0x11C1F8, BH's automap origin, is not this: it reads 0,0 here. */
+ * `GetMouseXOffset` looked exact — it matched to the unit against a standing player — but it is
+ * built from the truncated position, so it moves in sixteen-pixel steps while the camera glides.
+ * The proof is in one log: for an item that never moved, the computed screen x read 486, then
+ * 518, then 550, purely because the player walked. The player's own cross never wandered,
+ * because both sides of that sum were rounded the same way.
+ *
+ * So the fraction is read straight off the player's path, and the only thing left for the mouse
+ * offset is what it alone knows: how far the view has slid to make room for an open panel. That
+ * is the difference between the function and the variable behind it, which does not move.
+ *
+ * D2Client+0x11C1F8, BH's automap origin, is none of this: it reads 0,0 here. */
 static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y)
 {
-    if (cfg.anchor == 0) {
-        get_offset_fn mouse_x = (get_offset_fn)(base + OFF_GETMOUSEXOFF);
-        get_offset_fn mouse_y = (get_offset_fn)(base + OFF_GETMOUSEYOFF);
+    get_offset_fn mouse_x = (get_offset_fn)(base + OFF_GETMOUSEXOFF);
+    get_offset_fn mouse_y = (get_offset_fn)(base + OFF_GETMOUSEYOFF);
+    int width = (int)*(const DWORD *)(base + OFF_SCREENSIZEX);
+    int height = (int)*(const DWORD *)(base + OFF_SCREENSIZEY);
+    int px = 0, py = 0;
+
+    if (width < 320 || width > 4096) width = 800;
+    if (height < 200 || height > 4096) height = 600;
+
+    if (cfg.anchor == 1) {
         *out_x = (world_x - world_y) * 16 - mouse_x();
         *out_y = (world_x + world_y) * 8 - mouse_y() + 24;
         return 1;
     }
 
-    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
-    get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
-    get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
-    void *player = get_player();
-    if (!player) return 0;
-    int px = get_x(player), py = get_y(player);
-    DWORD width = *(const DWORD *)(base + OFF_SCREENSIZEX);
-    DWORD height = *(const DWORD *)(base + OFF_SCREENSIZEY);
-    if (width < 320 || width > 4096) width = 800;
-    if (height < 200 || height > 4096) height = 600;
-    *out_x = (int)(width / 2) + (world_x - px - (world_y - py)) * 16;
-    *out_y = (int)(height / 2) + (world_x - px + (world_y - py)) * 8;
+    if (cfg.anchor == 0 && player_precise(base, &px, &py)) {
+        long long dx = ((long long)world_x << 16) - px;
+        long long dy = ((long long)world_y << 16) - py;
+        int slid_x = mouse_x() - *(const int *)(base + OFF_MOUSEOFFSETX);
+        int slid_y = mouse_y() - *(const int *)(base + OFF_MOUSEOFFSETY);
+        *out_x = width / 2 + (int)(((dx - dy) * 16) >> 16) - slid_x;
+        *out_y = height / 2 + (int)(((dx + dy) * 8) >> 16) - slid_y;
+        return 1;
+    }
+
+    {
+        get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
+        get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
+        get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
+        void *player = get_player();
+        if (!player) return 0;
+        int ix = get_x(player), iy = get_y(player);
+        *out_x = width / 2 + (world_x - ix - (world_y - iy)) * 16;
+        *out_y = height / 2 + (world_x - ix + (world_y - iy)) * 8;
+    }
     return 1;
 }
 

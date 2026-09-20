@@ -110,22 +110,26 @@ Drawing has to happen inside the game's own frame and through D2Gfx, which is wh
 itself draws through — so it works on DDraw, Direct3D, Glide and D2GL alike, and D2GL improves it
 the same way it improves the game's own effects.
 
-**World to screen** is measured, not quoted:
+**World to screen** took three goes, and the thing that decided it was which player position to
+measure from.
 
 ```
-x = (wx - wy) * 16 - GetMouseXOffset()
-y = (wx + wy) * 8  - GetMouseYOffset() + 24
+dx = (item.x << 16) - player.x16        # the path at UnitAny+0x2C: x then y, 16.16 fixed
+dy = (item.y << 16) - player.y16
+x  = width/2  + ((dx - dy) * 16 >> 16) - (GetMouseXOffset() - [D2Client+0x119960])
+y  = height/2 + ((dx + dy) *  8 >> 16) - (GetMouseYOffset() - [D2Client+0x11995C])
 ```
 
-With the player at world 3993,5228 on a 1068x600 screen the origin has to be -20294,73468, and
-`GetMouseXOffset` returns exactly -20294 — it is the origin the game converts the mouse through,
-so it already knows the view has slid. Open the inventory and it moves to -20027: 267 pixels, a
-quarter of the screen width, which is how far the world shifts to make room. The y wants a
-constant 24 on top.
+`GetMouseXOffset` looked exact: against a standing player it matched the required origin to the
+unit. But it is built from `GetUnitX`, which truncates, so it moves in sixteen-pixel steps while
+the camera glides. One log settles it — for an item that never moved, the computed screen x read
+486, then 518, then 550, purely because the player walked. The player's own cross never wandered,
+because both sides of that sum were rounded the same way, which is exactly how the bug hid.
 
-Two things it is not. `D2Client+0x11C1F8`, BH's automap origin, reads 0,0 here with a divisor of
-20. The variables at `+0x119960` and `+0x11995C` hold the right pair but do not move when a panel
-opens, which is exactly the bug being fixed.
+So the fraction comes off the player's path, and the mouse offset is left with the one thing only
+it knows: how far the view has slid for an open panel, which is the difference between the
+function and the variable behind it. `D2Client+0x11C1F8`, BH's automap origin, is none of this —
+it reads 0,0 here with a divisor of 20.
 
 ## The art
 
@@ -174,6 +178,12 @@ session: 0 is nearly invisible, 3 glows and lets the ground show through, 5 is t
 one the game uses for its own panels, and the rest are slabs. The art is 81% near-black — index
 0 is only a fifth of it — so it is made to be added to the background, and anything that lays it
 over the ground shows a black brick. That is what the first look at it was.
+
+**Where in the frame to draw.** On the frame's last call the light lands over the item's own name
+plate and over the mouse cursor. Counting every D2gfx call's first and last position in one frame
+maps it: the world runs to call 12325, `#10054` is called exactly once at 12326, and everything
+after it is interface — the plate's own rectangle at 12361, the cursor, and `#10040` last of all.
+So `#10054` is the seam, and `drawon` sits on it.
 
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.
