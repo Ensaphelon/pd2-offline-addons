@@ -655,6 +655,82 @@ void probe_play_line(int index)
    UnitAny+0x2C is the path pointer for every unit type. */
 #define UNIT_TO_PATH 0x2C
 
+/* Everything worth knowing about what the game is holding right now, in one press.
+ *
+ * The aim it serves: a light beam should be an OBJECT the game animates by itself — Objects.txt
+ * is full of non-interactive "Dummy" ones that exist only to glow, and the game draws, animates
+ * and lights them with no help from us. To put one next to a dropped item we first need to see
+ * what an object looks like in memory next to an item, which is what this prints.
+ *
+ * The unit table has a row per type: 0 players, 1 monsters, 2 objects, 3 missiles, 4 items,
+ * 5 tiles. 128 buckets each, and the item row we already use sits at type 4. */
+#define UNIT_TABLE_BASE 0x10A608
+#define UNIT_ROW_BYTES  (UNIT_BUCKETS * 4)
+
+static const char *const TYPE_NAMES[] = { "player", "monster", "object", "missile", "item", "tile" };
+
+static int walk_row(const BYTE *client, int type, int list_limit, int dump_first)
+{
+    const BYTE *row = client + UNIT_TABLE_BASE + type * UNIT_ROW_BYTES;
+    int seen = 0, dumped = 0;
+    for (int bucket = 0; bucket < UNIT_BUCKETS; bucket++) {
+        DWORD address = 0;
+        if (!safe_read(row + bucket * 4, &address, 4)) continue;
+        int depth = 0;
+        while (address && depth++ < 64) {
+            unit_head unit;
+            if (!read_unit(address, &unit)) break;
+            if (unit.type != (DWORD)type) break;
+            seen++;
+            if (seen <= list_limit) {
+                DWORD path = 0, x = 0, y = 0;
+                safe_read((const void *)(UINT_PTR)(address + UNIT_TO_PATH), &path, 4);
+                if (path) {
+                    /* Items keep whole numbers further in; everything else keeps 16.16 up front. */
+                    if (type == 4) {
+                        safe_read((const void *)(UINT_PTR)(path + 0x0C), &x, 4);
+                        safe_read((const void *)(UINT_PTR)(path + 0x10), &y, 4);
+                    } else {
+                        safe_read((const void *)(UINT_PTR)(path + 0x00), &x, 4);
+                        safe_read((const void *)(UINT_PTR)(path + 0x04), &y, 4);
+                        x >>= 16; y >>= 16;
+                    }
+                }
+                log_line("    %-8s %08X txt=%-5lu mode=%-3lu at (%lu,%lu)",
+                         TYPE_NAMES[type], address, (unsigned long)unit.txtfile,
+                         (unsigned long)unit.mode, (unsigned long)x, (unsigned long)y);
+            }
+            if (dumped < dump_first) {
+                dumped++;
+                log_line("      ^ full structure:");
+                dump_range((const BYTE *)(UINT_PTR)address, (const BYTE *)(UINT_PTR)address, 0x100);
+            }
+            DWORD next = 0;
+            if (!safe_read((const void *)(UINT_PTR)(address + 0xEC), &next, 4)) break;
+            address = next;
+        }
+    }
+    return seen;
+}
+
+void probe_survey(void)
+{
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) { log_line("survey: D2Client is not loaded"); return; }
+    const BYTE *base = (const BYTE *)client;
+    log_line("=== survey ===");
+    for (int type = 0; type <= 5; type++) {
+        /* Objects get listed generously and dumped: they are the point of this survey. Items get
+           listed too, for the comparison. Everything else is just a count. */
+        int list = (type == 2) ? 24 : (type == 4 ? 8 : 0);
+        int dump = (type == 2 || type == 4) ? 1 : 0;
+        log_line("  type %d (%s):", type, TYPE_NAMES[type]);
+        int n = walk_row(base, type, list, dump);
+        log_line("    %d unit(s) of this type", n);
+    }
+    log_line("=== survey done ===");
+}
+
 void probe_dump_paths(void)
 {
     HMODULE client = GetModuleHandleA("D2Client.dll");
