@@ -1,0 +1,22 @@
+[project]
+name = "pd2-quick-restart"
+version = "0.1.0"
+description = "A Restart line in Project Diablo 2's own ESC menu"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+pd2-quick-restart = "pd2_quick_restart.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pd2_quick_restart"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
