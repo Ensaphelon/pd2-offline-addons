@@ -1,12 +1,15 @@
-# Signature, read out of ProjectDiablo.dll rather than guessed:
-#   sound <unit-pointer> <id> <priority> <volume> <unknown>
-# Volume is the FOURTH number. Every earlier attempt sent zero there.
-sound 0 4718 255 255 0    tink05 at full volume
-sound 0 4718 255 64 0     tink05 at a quarter volume — should be audibly quieter
-sound 0 4718 255 0 0      tink05 at volume 0 — should be silent
-sound 0 4714 255 255 0    tink01
-sound 0 4722 255 255 0    tink09
-sound 0 4729 255 255 0    tink16
-sound 0 14 255 255 0      questdone (group 3, NOT the loot filter channel)
+# Press slowly — a second between presses. Sounds overlap otherwise and the comparison is lost.
+# The claim under test is not "quieter" but "silent": if arg3 is the volume, every SILENT line
+# below must produce nothing at all.
+sound 0 4718 255 255 0    LOUD    (arg3 = 255)
+sound 0 4718 255 0 0      SILENT? (arg3 = 0)
+sound 0 4718 255 255 0    LOUD    (arg3 = 255)
+sound 0 4718 255 0 0      SILENT? (arg3 = 0)
+# And the mirror test: hold arg3 at full and move arg2 instead. If THESE differ, the two
+# arguments are the other way round and the name's "Volume Or Priority" reads in that order.
+sound 0 4718 255 255 0    arg2 = 255, arg3 = 255
+sound 0 4718 0 255 0      arg2 = 0,   arg3 = 255
+sound 0 4718 255 255 0    arg2 = 255, arg3 = 255
+sound 0 4718 0 255 0      arg2 = 0,   arg3 = 255
 
 player Rendan
