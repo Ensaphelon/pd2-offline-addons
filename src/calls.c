@@ -185,10 +185,18 @@ void calls_report(DWORD frames)
     }
 }
 
-/* D2gfx #10010: six arguments, handed straight to the renderer's own vtable at [iface+0xC0].
-   That indirection is the point — it dispatches to Glide, Direct3D or DirectDraw alike, so
-   anything drawn through it exists on every renderer instead of only under D2GL.
-   The six are almost certainly left, top, right, bottom, colour, transparency. */
+/* Ordinals and offsets from SlashDiablo Maphack's D2Ptrs.h, which is BH's own source and AGPL —
+   public by licence. Six failed attempts at drawing were all searches for numbers that have been
+   written down for twenty years:
+
+     D2Gfx  #10014  DrawRectangle(x1, y1, x2, y2, colour, transparency)
+     D2Gfx  #10010  DrawLine(x1, y1, x2, y2, colour, unknown)     <- what was tried, with
+                                                                     rectangle arguments
+     D2Client+0x1630 / +0x1660   GetUnitX / GetUnitY   (__fastcall)
+     D2Client+0x3F6C0 / +0x3F6D0 GetMouseXOffset / GetMouseYOffset
+     D2Client+0xDBC48 / +0xDBC4C ScreenSizeX / ScreenSizeY
+
+   Colour is a palette index, not RGB, and transparency 0 is solid while 5 blends. */
 typedef void (__stdcall *gfx_draw6_fn)(int, int, int, int, int, int);
 
 void __cdecl calls_at(int index)
@@ -204,12 +212,14 @@ void calls_draw_test_box(void)
         HMODULE gfx = GetModuleHandleA("D2gfx.dll");
         if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
         if (!gfx) return;
-        draw = (gfx_draw6_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10010));
-        log_line("draw: D2gfx #10010 at %p", (void *)draw);
+        draw = (gfx_draw6_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10014));
+        log_line("draw: D2gfx #10014 DrawRectangle at %p", (void *)draw);
         if (!draw) return;
     }
-    /* A fixed box, no position maths yet — one variable at a time. */
-    draw(120, 100, 280, 380, 0x54, 5);
+    /* Two boxes: one solid, one blended, so a wrong transparency cannot hide both. Still no
+       position maths — the coordinates come next, and one variable at a time. */
+    draw(120, 100, 280, 240, 0x9A, 0);
+    draw(320, 100, 480, 240, 0x9A, 5);
 }
 
 /* ---------------------------------------------------------------------------------------- */
