@@ -66,8 +66,14 @@ static int safe_read(const void *at, void *into, SIZE_T bytes)
 #define OFF_PANELOFFSETX 0x11B9A0
 #define OFF_GETMOUSEXOFF 0x3F6C0
 #define OFF_GETMOUSEYOFF 0x3F6D0
+#define OFF_MOUSEY 0x11B824
+#define OFF_MOUSEX 0x11B828
+#define OFF_HOVERX 0xE0EB8       /* where the game puts the text for what is under the cursor */
+#define OFF_HOVERY 0xE0EBC
+#define OFF_GETSELECTED 0x51A80
 
 typedef int(__fastcall *get_offset_fn)(void);
+typedef void *(__stdcall *get_selected_fn)(void);
 
 /* Everything the look depends on lives in beam.txt beside the DLL and is re-read while the game
    runs, so trying another blend or nudging the sprite is a text edit and not a rebuild. */
@@ -546,28 +552,40 @@ static void mark_spot(int x, int y)
    is in the item's own coordinates. Eyes and a name plate cannot measure that — the plate is the
    loot filter's and is not promised to be centred on anything — so the numbers are printed and
    the test is to stand ON the item, where the two sets must agree. */
-static void report_item(const BYTE *base, int ix, int iy, int isx, int isy)
+static void report_item(const BYTE *base, const void *unit, int ix, int iy, int isx, int isy)
 {
     static DWORD last_at;
-    if (last_at && GetTickCount() - last_at < 1000) return;
-    last_at = GetTickCount();
-
     get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
-    void *player = get_player();
-    if (!player) return;
-    get_coord_fn gx = (get_coord_fn)(base + OFF_GETUNITX);
-    get_coord_fn gy = (get_coord_fn)(base + OFF_GETUNITY);
-    int px = gx(player), py = gy(player), psx = 0, psy = 0;
-    world_to_screen(base, px, py, &psx, &psy);
-    log_line("where: item world %d,%d -> screen %d,%d   player world %d,%d -> screen %d,%d"
-             "   apart %d,%d", ix, iy, isx, isy, px, py, psx, psy, ix - px, iy - py);
+    get_selected_fn get_selected = (get_selected_fn)(base + OFF_GETSELECTED);
+    void *player, *hovered;
+    int px16 = 0, py16 = 0, mx, my, hx, hy;
+
+    if (last_at && GetTickCount() - last_at < 1000) return;
+
+    /* The only honest ground truth for where the game DREW an item is the game. Point the cursor
+       at it and D2 says so itself: the unit under the cursor, and the place it puts the text for
+       it. Screenshots and name plates cannot measure a transform; this can. */
+    hovered = get_selected();
+    if (hovered != unit) return;
+
+    last_at = GetTickCount();
+    player = get_player();
+    if (!player || !player_precise(base, &px16, &py16)) return;
+    mx = (int)*(const DWORD *)(base + OFF_MOUSEX);
+    my = (int)*(const DWORD *)(base + OFF_MOUSEY);
+    hx = (int)*(const DWORD *)(base + OFF_HOVERX);
+    hy = (int)*(const DWORD *)(base + OFF_HOVERY);
+
+    log_line("hover: item %d,%d  player %d.%05d,%d.%05d  ours %d,%d  mouse %d,%d  hover %d,%d",
+             ix, iy, px16 >> 16, (px16 & 0xFFFF) * 100000 / 65536,
+             py16 >> 16, (py16 & 0xFFFF) * 100000 / 65536, isx, isy, mx, my, hx, hy);
 }
 
-static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
+static void draw_over(const BYTE *base, const void *unit, int world_x, int world_y, int tick)
 {
     int x, y;
     if (!world_to_screen(base, world_x, world_y, &x, &y)) return;
-    if (cfg.mark) report_item(base, world_x, world_y, x, y);
+    if (cfg.mark) report_item(base, unit, world_x, world_y, x, y);
     x += cfg.dx;
     y += cfg.dy;
     draw_foot_at(x, y, tick);
@@ -646,7 +664,7 @@ void beam_draw(void)
             if (mode == 3 && item_data) {
                 DWORD quality = *(const DWORD *)(UINT_PTR)item_data;
                 if (quality == 5 || quality == 7)   /* set, unique */
-                    draw_over(base, get_x((void *)unit), get_y((void *)unit), tick);
+                    draw_over(base, unit, get_x((void *)unit), get_y((void *)unit), tick);
             }
             address = unit[0x3B];         /* +0xEC, the next in this bucket */
         }
