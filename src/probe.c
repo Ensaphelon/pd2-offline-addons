@@ -41,8 +41,19 @@ static char player_name[32];
    drop alert obeys the LOOT FILTER slider in Sound Options rather than playing at full blast
    outside every volume control the game offers. Anything we play has to go through it for the
    same reason.
-   Five arguments, and which is which is not documented anywhere — so they come from the config
-   file and are auditioned in game rather than guessed at here. */
+   Five arguments, and reading the exported code settles what each one is — guessing at them in
+   a running game got as far as crashing it:
+
+     arg0  a unit pointer, dereferenced when non-zero, so the sound is placed in the world.
+           Zero plays it without a position. Passing 1 here is what took the game down.
+     arg1  the sound id. Checked >= 1 and used to index Sounds.txt (stride 0x92).
+     arg2  clamped to 0..255 and stored as a dword — the priority.
+     arg3  clamped to 0..255 and stored as a BYTE — the volume. This is the one that matters,
+           and it is the one we had been passing zero into.
+     arg4  stored verbatim; purpose unknown, zero is what the game's own callers appear to use.
+
+   Which slider governs the result is not an argument at all: it is the Sound Group column of
+   the sound's own row in Sounds.txt. Group 12 is the LOOT FILTER channel. */
 typedef int (__stdcall *play_sound_fn)(int, int, int, int, int);
 static play_sound_fn play_sound;
 
@@ -619,6 +630,13 @@ void probe_play_next_sound(void)
     if (!play_sound) return;
     if (!sound_count) { log_line("sound: no 'sound ...' lines in the config"); return; }
     sound_probe *s = &sounds[sound_next % sound_count];
+    /* arg0 is a pointer the callee dereferences. A small integer there is not a unit, it is a
+       crash — which is exactly how this was learned. */
+    if (s->arg[0] != 0 && s->arg[0] < 0x10000) {
+        log_line("sound: refusing arg0=%d — it is a pointer, and that is not one", s->arg[0]);
+        sound_next++;
+        return;
+    }
     log_line("sound: playing (%d, %d, %d, %d, %d) — %s",
              s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4], s->label);
     play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);

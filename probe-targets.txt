@@ -1,13 +1,12 @@
-# The call is named ...WithCustomVolumeOrPriority and we have been passing zeros into it. If one
-# of those five arguments IS the volume, zero means silence — which would explain a sound that
-# the log says played and nobody heard. Same sound every time; only the numbers move.
-sound 0 4718 0 0 0        tink05, all zeros (what we sent before)
-sound 0 4718 255 0 0      tink05, 255 in arg2
-sound 0 4718 0 255 0      tink05, 255 in arg3
-sound 0 4718 0 0 255      tink05, 255 in arg4
-sound 0 4718 255 255 0    tink05, 255 in arg2 and arg3
-sound 4718 255 0 0 0      tink05, id in arg0 and 255 in arg1
-sound 1 4718 255 0 0      tink05, 1 in arg0 (a unit id?) and 255 in arg2
-sound 0 14 255 0 0        questdone, 255 in arg2 — the one that WAS audible, for comparison
+# Signature, read out of ProjectDiablo.dll rather than guessed:
+#   sound <unit-pointer> <id> <priority> <volume> <unknown>
+# Volume is the FOURTH number. Every earlier attempt sent zero there.
+sound 0 4718 255 255 0    tink05 at full volume
+sound 0 4718 255 64 0     tink05 at a quarter volume — should be audibly quieter
+sound 0 4718 255 0 0      tink05 at volume 0 — should be silent
+sound 0 4714 255 255 0    tink01
+sound 0 4722 255 255 0    tink09
+sound 0 4729 255 255 0    tink16
+sound 0 14 255 255 0      questdone (group 3, NOT the loot filter channel)
 
 player Rendan
