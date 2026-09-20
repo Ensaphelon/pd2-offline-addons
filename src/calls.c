@@ -2,12 +2,17 @@
 #include <string.h>
 #include "log.h"
 
-/* Which of D2Client's calls into D2Win happen while the world is being drawn.
+/* Which of D2Client's calls into D2gfx happen while the world is being drawn.
  *
  * Drawing has to happen inside the game's own frame, using the game's own primitives, or it only
  * works on one renderer — a lesson paid for by drawing through the Glide wrapper and seeing
- * nothing. D2Client reaches its drawing through D2Win, by ordinal, thirty-eight of them. Which
- * is which is not written down anywhere we have.
+ * nothing. D2Client reaches its drawing through D2gfx — note the lower-case g, which is how it
+ * appears in the import table and which hid it from an earlier search that compared names
+ * exactly. Fifty-eight ordinals, and which is which is not written down anywhere we have.
+ *
+ * D2Win was watched first and answered a different question: its #10190 takes three bytes and
+ * feeds a palette, and its #10024 is simply the last of its calls each frame. Neither draws the
+ * world.
  *
  * So all thirty-eight get counted at once. Each import is pointed at a twelve-byte thunk that
  * increments a counter and jumps on to the real function — no stack touched, no arguments
@@ -15,7 +20,7 @@
  * back is a frequency table: the one called once per frame is where a renderer belongs, and the
  * ones called hundreds of times are the primitives themselves. */
 
-#define MAX_HOOKS 64
+#define MAX_HOOKS 96
 
 static void *originals[MAX_HOOKS];
 static volatile LONG counts[MAX_HOOKS];
@@ -99,8 +104,8 @@ BOOL calls_watch_install(void)
     if (!client) return FALSE;
 
     WORD wanted[MAX_HOOKS];
-    int count = collect_ordinals(client, "D2Win.dll", wanted, MAX_HOOKS);
-    if (!count) { log_line("calls: D2Client imports no D2Win ordinals"); return FALSE; }
+    int count = collect_ordinals(client, "D2gfx.dll", wanted, MAX_HOOKS);
+    if (!count) { log_line("calls: D2Client imports no D2gfx ordinals"); return FALSE; }
 
     thunks = (BYTE *)VirtualAlloc(NULL, count * 32, MEM_COMMIT | MEM_RESERVE,
                                   PAGE_EXECUTE_READWRITE);
@@ -110,14 +115,14 @@ BOOL calls_watch_install(void)
         BYTE *thunk = thunks + i * 32;
         write_thunk(thunk, i, &counts[i], &originals[i]);
         void *previous = NULL;
-        void **slot = redirect_ordinal(client, "D2Win.dll", wanted[i], thunk, &previous);
+        void **slot = redirect_ordinal(client, "D2gfx.dll", wanted[i], thunk, &previous);
         if (!slot) continue;
         originals[i] = previous;
         slots[i] = slot;
         ordinals[i] = wanted[i];
         hook_count++;
     }
-    log_line("calls: watching %d of D2Client's %d calls into D2Win", hook_count, count);
+    log_line("calls: watching %d of D2Client's %d calls into D2gfx", hook_count, count);
     return hook_count > 0;
 }
 
@@ -136,7 +141,7 @@ void calls_report(DWORD frames)
     for (int i = 0; i < hook_count; i++) {
         LONG n = InterlockedExchange(&counts[i], 0);
         if (!n) continue;
-        log_line("    D2Win #%u: %ld calls  (%.1f per frame)",
+        log_line("    D2gfx #%u: %ld calls  (%.1f per frame)",
                  ordinals[i], n, (double)n / (double)frames);
     }
 }
