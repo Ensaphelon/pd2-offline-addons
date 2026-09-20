@@ -197,6 +197,28 @@ maps it: the world runs to call 12325, `#10054` is called exactly once at 12326,
 after it is interface — the plate's own rectangle at 12361, the cursor, and `#10040` last of all.
 So `#10054` is the seam, and `drawon` sits on it.
 
+## Whose drop is it
+
+A light over every unique and set item on the ground is wrong twice over: it fires for the item
+the player just put down themselves, and again for the one they picked up an hour ago and dropped
+to make room. What earns a light is a drop the player did not make — off a monster, out of a
+chest — and each earns it once.
+
+Both fall out of one fact. The client's unit table holds the player's own items alongside the
+ones lying around, told apart by `dwMode`: 3 is at rest on the ground and 5 is still falling,
+while 0, 1, 2, 4 and 6 are stored, worn, belted, on the cursor and socketed — in a single-player
+game, all of them the player's. So every id ever seen in one of those modes is remembered, and a
+remembered id never gets a light again.
+
+That covers dropping it yourself, because an item cannot leave a character without being carried
+by them first; it covers picking it up, because picking it up puts it in one of those modes; and
+it leaves a monster's drop alone, which is born on the ground.
+
+What it does NOT yet know is whether the item would actually complete the grail. The client's copy
+of a ground item carries no unique or set id — that is on the server-side unit — so the most the
+plugin can read is `dwTxtFileNo`, the base. Filtering to bases that can still yield something
+missing needs a list written out by pd2-holy-inventory, and that list does not exist yet.
+
 ## Perspective
 
 PD2's video options have a perspective mode, and with it on the world is drawn with a real

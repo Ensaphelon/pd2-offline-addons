@@ -98,8 +98,15 @@ static struct {
     int drawon;   /* the ordinal to draw on; 0 means the last call of the frame */
     int mark;     /* a dot at the exact point the transform works out, to see it against the
                      item's own sprite */
+    int falling;  /* light it while it is still bouncing, not only once it has settled */
     int on;
-} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1, 0, 10054, 1};
+} cfg = {
+    /* Named rather than counted: this list has gained a field four times, and a positional
+       initialiser silently shifts every value after the new one. */
+    .art = 0, .trans = 3, .bright = -1, .ordinal = 10019, .colour = 0, .rate = 4,
+    .dx = 0, .dy = 0, .anchor = 0, .test = 0, .capture = 0, .trace = 0,
+    .drawon = 10054, .mark = 0, .falling = 0, .on = 1,
+};
 
 static void capture_arm(void);
 static void trace_arm(void);
@@ -152,6 +159,7 @@ void beam_reload(void)
         if (sscanf(line, "trace %i", &value) == 1) { cfg.trace = value; trace_arm(); continue; }
         if (sscanf(line, "drawon %i", &value) == 1) { cfg.drawon = value; continue; }
         if (sscanf(line, "mark %i", &value) == 1) { cfg.mark = value; continue; }
+        if (sscanf(line, "falling %i", &value) == 1) { cfg.falling = value; continue; }
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
@@ -696,6 +704,70 @@ static void draw_over(const BYTE *base, const void *unit, int world_x, int world
     if (cfg.mark) mark_spot(x, y);
 }
 
+/* Whose drop is it.
+ *
+ * A light over every unique and set item on the ground is wrong twice over: it fires for the
+ * item the player just put down themselves, and it fires again for the one they picked up an
+ * hour ago and dropped to make room. What earns a light is a drop the player did not make — off
+ * a monster, out of a chest they smashed — and each one earns it once.
+ *
+ * Both come from one fact. The client's unit table holds the player's own items as well as the
+ * ones lying around, and they are told apart by mode: 3 is at rest on the ground and 5 is still
+ * falling, while 0, 1, 2, 4 and 6 mean stored, worn, in the belt, on the cursor and socketed —
+ * in a single-player game, all of them the player's. So every id ever seen in one of those modes
+ * is remembered, and an id that is remembered never gets a light again.
+ *
+ * That covers the dropped-it-myself case, because an item cannot leave a character without being
+ * carried by them first. It covers the picked-it-up case too, because picking it up puts it in
+ * one of those modes. And it does not touch a monster's drop, which is born on the ground. */
+#define HELD_SLOTS 8192
+
+static DWORD held[HELD_SLOTS];
+static int held_count;
+
+static int held_slot(DWORD id)
+{
+    /* Knuth's multiplicative hash; the table is a power of two and never grows, so an id lands
+       in at most a short run of probes. */
+    unsigned int i = (unsigned int)(id * 2654435761u) & (HELD_SLOTS - 1);
+    for (int n = 0; n < HELD_SLOTS; n++) {
+        if (!held[i] || held[i] == id) return (int)i;
+        i = (i + 1) & (HELD_SLOTS - 1);
+    }
+    return -1;
+}
+
+static void held_add(DWORD id)
+{
+    int at;
+    if (!id || held_count >= HELD_SLOTS - 64) return;
+    at = held_slot(id);
+    if (at < 0 || held[at]) return;
+    held[at] = id;
+    held_count++;
+}
+
+static int held_has(DWORD id)
+{
+    int at = id ? held_slot(id) : -1;
+    return at >= 0 && held[at] == id;
+}
+
+/* Said once per item, so a session's log reads as a list of what was decided and why rather than
+   the same line sixty times a second. */
+static void say_once(DWORD id, DWORD type_no, DWORD quality, int lit)
+{
+    static DWORD said[256];
+    static int said_at, said_count;
+    for (int i = 0; i < said_count; i++) if (said[i] == id) return;
+    said[said_at] = id;
+    said_at = (said_at + 1) & 255;
+    if (said_count < 256) said_count++;
+    log_line("grail: %s id %lu, type %lu, quality %lu — %s",
+             quality == 7 ? "unique" : "set", (unsigned long)id, (unsigned long)type_no,
+             (unsigned long)quality, lit ? "lit" : "the player has held this one");
+}
+
 /* Every item lying on the ground, out of the client's own unit table: six rows of 128 buckets,
    items being row four, each bucket a list linked through +0xEC. */
 void beam_draw(void)
@@ -762,12 +834,22 @@ void beam_draw(void)
         while (address && depth++ < 64) {
             const DWORD *unit = (const DWORD *)(UINT_PTR)address;
             if (unit[0] != 4) break;      /* dwType: item */
-            DWORD mode = unit[4];         /* dwMode: 3 is lying on the ground */
+            DWORD type_no = unit[1];      /* dwTxtFileNo: which base it is */
+            DWORD id = unit[3];           /* dwUnitId */
+            DWORD mode = unit[4];         /* dwMode */
             DWORD item_data = unit[5];
-            if (mode == 3 && item_data) {
+            int falling = (mode == 5);
+
+            if (mode != 3 && !falling) {
+                held_add(id);             /* stored, worn, belted, on the cursor, socketed */
+            } else if (item_data && (!falling || cfg.falling)) {
                 DWORD quality = *(const DWORD *)(UINT_PTR)item_data;
-                if (quality == 5 || quality == 7)   /* set, unique */
-                    draw_over(base, unit, get_x((void *)unit), get_y((void *)unit), tick);
+                if (quality == 5 || quality == 7) {   /* set, unique */
+                    int lit = !held_has(id);
+                    say_once(id, type_no, quality, lit);
+                    if (lit)
+                        draw_over(base, unit, get_x((void *)unit), get_y((void *)unit), tick);
+                }
             }
             address = unit[0x3B];         /* +0xEC, the next in this bucket */
         }

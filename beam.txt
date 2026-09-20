@@ -15,3 +15,4 @@ colour  0         # its last argument, a small number — the game passes 0 or 1
 trace   0         # print the shape of one frame to the log
 drawon  10054     # after the world, before the name plates and the cursor; 0 means last
 mark    0         # 1 a cross where the item is reckoned to be, 2 one at the player too
+falling 0         # 1 lights it while it is still bouncing, 0 only once it has settled
