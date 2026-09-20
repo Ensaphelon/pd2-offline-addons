@@ -216,17 +216,20 @@ void beam_inspect(int ordinal, const DWORD *args)
  *
  * Eleven thousand calls a frame is too many to print, but almost all of them are runs of the same
  * ordinal, so only the changes are recorded: which call, and how many calls into the frame it
- * came. That is the frame's structure on one screen. */
+ * came. The first attempt kept the FIRST hundred and sixty of those and spent every one of them
+ * inside the floor-tile loop, where #10076 and #10023 alternate for thousands of calls. So it
+ * keeps the last hundred and sixty instead — the end of the frame is the part in question. */
 static volatile LONG trace_left;
 static struct { WORD ordinal; DWORD at; } trace_seen[160];
-static int trace_count;
+static int trace_count, trace_first;
 static DWORD trace_calls;
+static int trace_pending;
+
+#define TRACE_MAX ((int)(sizeof(trace_seen) / sizeof(trace_seen[0])))
 
 static void trace_arm(void)
 {
-    trace_count = 0;
-    trace_calls = 0;
-    trace_left = cfg.trace;
+    trace_pending = cfg.trace > 0;
 }
 
 int beam_tracing(void)
@@ -241,26 +244,33 @@ int beam_draw_on(void)
 
 void beam_trace(int ordinal)
 {
+    int last = (trace_first + trace_count - 1) % TRACE_MAX;
     trace_calls++;
-    if (trace_count && trace_seen[trace_count - 1].ordinal == (WORD)ordinal) return;
-    if (trace_count >= (int)(sizeof(trace_seen) / sizeof(trace_seen[0]))) return;
-    trace_seen[trace_count].ordinal = (WORD)ordinal;
-    trace_seen[trace_count].at = trace_calls;
+    if (trace_count && trace_seen[last].ordinal == (WORD)ordinal) return;
+
+    if (trace_count == TRACE_MAX) {
+        trace_seen[trace_first].ordinal = (WORD)ordinal;
+        trace_seen[trace_first].at = trace_calls;
+        trace_first = (trace_first + 1) % TRACE_MAX;
+        return;
+    }
+    trace_seen[(trace_first + trace_count) % TRACE_MAX].ordinal = (WORD)ordinal;
+    trace_seen[(trace_first + trace_count) % TRACE_MAX].at = trace_calls;
     trace_count++;
 }
 
 static void trace_report(void)
 {
-    char line[256];
+    char line[220];
     int used = 0;
 
-    if (trace_left <= 0) return;
-    trace_left = 0;
-    log_line("trace: one frame, %lu calls — ordinal@how-far-in", (unsigned long)trace_calls);
+    log_line("trace: the last %d turns of one frame of %lu calls — ordinal@how-far-in",
+             trace_count, (unsigned long)trace_calls);
     for (int i = 0; i < trace_count; i++) {
+        int at = (trace_first + i) % TRACE_MAX;
         int wrote = snprintf(line + used, sizeof(line) - used, "%s#%u@%lu",
-                             used ? "  " : "    ", trace_seen[i].ordinal,
-                             (unsigned long)trace_seen[i].at);
+                             used ? "  " : "    ", trace_seen[at].ordinal,
+                             (unsigned long)trace_seen[at].at);
         if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) {
             line[used] = 0;
             log_line("%s", line);
@@ -271,6 +281,18 @@ static void trace_report(void)
         used += wrote;
     }
     if (used) { line[used] = 0; log_line("%s", line); }
+}
+
+/* One frame exactly: beam_draw runs once a frame, so arming on one visit and reporting on the
+   next is a frame, and the first attempt — which stopped after two hundred of them — is why the
+   count read two and a half million. */
+static void trace_step(void)
+{
+    if (trace_left > 0) { trace_left = 0; trace_report(); trace_pending = 0; return; }
+    if (!trace_pending) return;
+    trace_count = trace_first = 0;
+    trace_calls = 0;
+    trace_left = 1;
 }
 
 static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned int size,
@@ -460,6 +482,21 @@ static void report_transform(const BYTE *base)
 
 typedef void(__stdcall *draw_rect_fn)(int, int, int, int, int, int);
 
+/* A cross, in the colour and blend that have shown up on screen every time they were used. The
+   first marker was a five-pixel box in colour 255 at blend 0 and was not visible at all. */
+static void mark_spot(int x, int y)
+{
+    static draw_rect_fn rect;
+    if (!rect) {
+        HMODULE gfx = GetModuleHandleA("D2gfx.dll");
+        if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
+        if (gfx) rect = (draw_rect_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10014));
+        if (!rect) return;
+    }
+    rect(x - 9, y - 1, x + 10, y + 2, 0x9A, 5);
+    rect(x - 1, y - 9, x + 2, y + 10, 0x9A, 5);
+}
+
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
 {
     int x, y;
@@ -470,15 +507,7 @@ static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
 
     /* Where the transform says the item is, as a solid dot, so it can be judged against the
        item's own sprite rather than against its name plate. */
-    if (cfg.mark) {
-        static draw_rect_fn rect;
-        if (!rect) {
-            HMODULE gfx = GetModuleHandleA("D2gfx.dll");
-            if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
-            if (gfx) rect = (draw_rect_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10014));
-        }
-        if (rect) rect(x - 2, y - 2, x + 3, y + 3, 0xFF, 0);
-    }
+    if (cfg.mark) mark_spot(x, y);
 }
 
 /* Every item lying on the ground, out of the client's own unit table: six rows of 128 buckets,
@@ -490,8 +519,9 @@ void beam_draw(void)
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     tick++;
-    if (tick == 1) { capture_arm(); trace_arm(); }
-    if (tick > 200) trace_report();
+    if (tick == 1) capture_arm();
+    if (tick == 120) trace_arm();
+    trace_step();
     report_transform((const BYTE *)client);
     if (capture_left > 0 && !--capture_left) log_line("capture: done looking");
 
@@ -499,6 +529,20 @@ void beam_draw(void)
        going to fall over drawing this it should do it on the way in, not when something rare
        has just dropped. It also puts the art on screen next to the game's own graphics, which
        is the only way to judge it. Turn it off with `test 0`. */
+    /* The player is drawn where the game puts it, so a cross at the player's own computed
+       position says whether the transform is sound, without anything having to be dropped. */
+    if (cfg.mark >= 2) {
+        get_player_fn get_player = (get_player_fn)((const BYTE *)client + OFF_GETPLAYERUNIT);
+        void *player = get_player();
+        if (player) {
+            get_coord_fn gx = (get_coord_fn)((const BYTE *)client + OFF_GETUNITX);
+            get_coord_fn gy = (get_coord_fn)((const BYTE *)client + OFF_GETUNITY);
+            int x, y;
+            if (world_to_screen((const BYTE *)client, gx(player), gy(player), &x, &y))
+                mark_spot(x, y);
+        }
+    }
+
     if (cfg.test) {
         static int said;
         if (!said) { said = 1; log_line("beam: drawing the fixed test sprite"); }
