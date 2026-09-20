@@ -110,10 +110,22 @@ Drawing has to happen inside the game's own frame and through D2Gfx, which is wh
 itself draws through — so it works on DDraw, Direct3D, Glide and D2GL alike, and D2GL improves it
 the same way it improves the game's own effects.
 
-**World to screen** is the automap's arithmetic, because the automap is drawn in the world's own
-projection: `x = (wx - wy) * 16 - origin.x + 8`, `y = (wx + wy) * 8 - origin.y - 8`. Taking the
-origin from the game rather than from half the screen width is what keeps the light on its item
-when a panel opens and the view slides sideways.
+**World to screen** is measured, not quoted:
+
+```
+x = (wx - wy) * 16 - GetMouseXOffset()
+y = (wx + wy) * 8  - GetMouseYOffset() + 24
+```
+
+With the player at world 3993,5228 on a 1068x600 screen the origin has to be -20294,73468, and
+`GetMouseXOffset` returns exactly -20294 — it is the origin the game converts the mouse through,
+so it already knows the view has slid. Open the inventory and it moves to -20027: 267 pixels, a
+quarter of the screen width, which is how far the world shifts to make room. The y wants a
+constant 24 on top.
+
+Two things it is not. `D2Client+0x11C1F8`, BH's automap origin, reads 0,0 here with a divisor of
+20. The variables at `+0x119960` and `+0x11995C` hold the right pair but do not move when a panel
+opens, which is exactly the bug being fixed.
 
 ## The art
 

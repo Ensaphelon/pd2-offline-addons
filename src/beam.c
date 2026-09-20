@@ -60,6 +60,13 @@ static int safe_read(const void *at, void *into, SIZE_T bytes)
 #define OFF_VIEW_OFFSET 0x11C1F8  /* POINT: where the world's origin sits on screen */
 #define OFF_VIEW_DIVISOR 0xF16B0
 #define OFF_UNIT_TABLE 0x10A608
+#define OFF_MOUSEOFFSETY 0x11995C
+#define OFF_MOUSEOFFSETX 0x119960
+#define OFF_PANELOFFSETX 0x11B9A0
+#define OFF_GETMOUSEXOFF 0x3F6C0
+#define OFF_GETMOUSEYOFF 0x3F6D0
+
+typedef int(__fastcall *get_offset_fn)(void);
 
 /* Everything the look depends on lives in beam.txt beside the DLL and is re-read while the game
    runs, so trying another blend or nudging the sprite is a text edit and not a rebuild. */
@@ -71,16 +78,15 @@ static struct {
     int colour;   /* the draw's last argument; the game passes small numbers here */
     int rate;     /* game frames per sprite frame */
     int dx, dy;   /* nudge, in pixels */
-    int anchor;   /* 0 the view offset, 1 relative to the player — the proven one, and the
-                     default until the report below says the other is sound, because a sprite
-                     drawn at a coordinate a transform got wrong is how the game went down */
+    int anchor;   /* 0 the mouse origin, which follows the view when a panel slides it;
+                     1 relative to the player, which does not */
     int test;     /* 1 draws one at a fixed spot on screen, so the art can be judged and the
                      draw proved safe without anything having to be dropped first; 2 draws the
                      row of blends below */
     int capture;  /* frames to watch the game's own calls for, looking for the one that draws
                      a cell — set it again to take another look without restarting */
     int on;
-} cfg = {0, 5, -1, 10019, 0, 3, 0, 0, 1, 1, 40, 1};
+} cfg = {0, 5, -1, 10019, 0, 3, 0, 0, 0, 2, 0, 1};
 
 static void capture_arm(void);
 static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y);
@@ -116,7 +122,7 @@ void beam_reload(void)
             continue;
         }
         if (sscanf(line, "anchor %31s", word) == 1) {
-            cfg.anchor = !_stricmp(word, "player") ? 1 : 0;
+            cfg.anchor = !_stricmp(word, "player") ? 1 : 0;   /* anything else: mouse */
             continue;
         }
         if (sscanf(line, "trans %i", &value) == 1) { cfg.trans = value; continue; }
@@ -277,22 +283,26 @@ static void draw_sprite(void *cells, int frame, int x, int y)
     draw_cell(context, x, y, cfg.bright, cfg.trans, cfg.colour);
 }
 
-/* World to screen.
+/* World to screen, settled by measurement rather than by a header.
  *
- * The player-relative version was right until a panel opened: the game slides the whole view
- * sideways to make room and the sprite, pinned to half the screen width, stayed where it was.
- * The view's own origin is a variable — D2Client+0x11C1F8, the same POINT BH converts automap
- * coordinates through, and the automap is drawn in the world's projection, which is why its
- * arithmetic is ours. With the divisor at one it reduces to the transform already proven here:
- * sixteen pixels across per subtile and eight down. */
+ * With the player at world 3993,5228 on a 1068x600 screen the transform needs an origin of
+ * -20294,73468, and `GetMouseXOffset` returns exactly -20294. That is no coincidence: it is the
+ * origin the game itself converts the mouse through, so it is the one that already knows the
+ * view has slid. Opening the inventory moves it to -20027 — a quarter of the screen width, 267
+ * pixels, which is precisely how far the world shifts to make room.
+ *
+ * The y wants a constant 24 on top: `GetMouseYOffset` reads 73492 where 73468 is needed. The
+ * variables at +0x119960 and +0x11995C hold the same pair but do NOT move when a panel opens,
+ * which is what made them the wrong answer and the functions the right one.
+ *
+ * D2Client+0x11C1F8, BH's automap origin, is not this: it reads 0,0 here. */
 static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y)
 {
     if (cfg.anchor == 0) {
-        const LONG *offset = (const LONG *)(base + OFF_VIEW_OFFSET);
-        int divisor = *(const int *)(base + OFF_VIEW_DIVISOR);
-        if (divisor < 1 || divisor > 4) divisor = 1;
-        *out_x = ((world_x * 32 - world_y * 32) / 2 / divisor) - (int)offset[0] + 8;
-        *out_y = ((world_x * 32 + world_y * 32) / 4 / divisor) - (int)offset[1] - 8;
+        get_offset_fn mouse_x = (get_offset_fn)(base + OFF_GETMOUSEXOFF);
+        get_offset_fn mouse_y = (get_offset_fn)(base + OFF_GETMOUSEYOFF);
+        *out_x = (world_x - world_y) * 16 - mouse_x();
+        *out_y = (world_x + world_y) * 8 - mouse_y() + 24;
         return 1;
     }
 
@@ -330,14 +340,6 @@ static void draw_foot_at(int x, int y, int tick)
  * pixel minus half the screen — and printed beside every candidate BH names. Logged again
  * whenever any of them moves, which is what opening a panel does, so one session answers both
  * halves of the question. */
-#define OFF_MOUSEOFFSETY 0x11995C
-#define OFF_MOUSEOFFSETX 0x119960
-#define OFF_PANELOFFSETX 0x11B9A0
-#define OFF_GETMOUSEXOFF 0x3F6C0
-#define OFF_GETMOUSEYOFF 0x3F6D0
-
-typedef int(__fastcall *get_offset_fn)(void);
-
 static void report_transform(const BYTE *base)
 {
     static DWORD last_at;

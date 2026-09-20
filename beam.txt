@@ -7,7 +7,7 @@ draw    10019     # which D2Gfx call does the drawing
 rate    3         # game frames per sprite frame — lower is faster
 dx      0         # nudge right
 dy      0         # nudge down
-anchor  player    # player (proven) or offset (follows the view when a panel slides it)
+anchor  mouse     # mouse (follows the view when a panel slides it) or player
 on      1
 test    2         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
 capture 0         # frames to watch the game's own drawing calls for; set again to look afresh
