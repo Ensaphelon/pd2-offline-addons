@@ -1,25 +1,13 @@
-# F10 plays the next line. The channel a sound obeys is NOT an argument: it is the Sound Group
-# column in the game's own Sounds.txt. Group 12 is the LOOT FILTER slider, and exactly sixteen
-# sounds live there — PD2's own drop "tinks". Everything below is group 12, so every one of these
-# is governed by LOOT FILTER.
-sound 0 4714 0 0 0    drop_tink01 [group 12 = LOOT FILTER]
-sound 0 4715 0 0 0    drop_tink02 [group 12 = LOOT FILTER]
-sound 0 4716 0 0 0    drop_tink03 [group 12 = LOOT FILTER]
-sound 0 4717 0 0 0    drop_tink04 [group 12 = LOOT FILTER]
-sound 0 4718 0 0 0    drop_tink05 [group 12 = LOOT FILTER]
-sound 0 4719 0 0 0    drop_tink06 [group 12 = LOOT FILTER]
-sound 0 4720 0 0 0    drop_tink07 [group 12 = LOOT FILTER]
-sound 0 4721 0 0 0    drop_tink08 [group 12 = LOOT FILTER]
-sound 0 4722 0 0 0    drop_tink09 [group 12 = LOOT FILTER]
-sound 0 4723 0 0 0    drop_tink10 [group 12 = LOOT FILTER]
-sound 0 4724 0 0 0    drop_tink11 [group 12 = LOOT FILTER]
-sound 0 4725 0 0 0    drop_tink12 [group 12 = LOOT FILTER]
-sound 0 4726 0 0 0    drop_tink13 [group 12 = LOOT FILTER]
-sound 0 4727 0 0 0    drop_tink14 [group 12 = LOOT FILTER]
-sound 0 4728 0 0 0    drop_tink15 [group 12 = LOOT FILTER]
-sound 0 4729 0 0 0    drop_tink16 [group 12 = LOOT FILTER]
-# And two from other groups, to hear the difference in which slider controls them.
-sound 0 14 0 0 0    questdone [group 3 — the one that is drowned by music]
-sound 0 40 0 0 0    spotlight [group 10]
+# The call is named ...WithCustomVolumeOrPriority and we have been passing zeros into it. If one
+# of those five arguments IS the volume, zero means silence — which would explain a sound that
+# the log says played and nobody heard. Same sound every time; only the numbers move.
+sound 0 4718 0 0 0        tink05, all zeros (what we sent before)
+sound 0 4718 255 0 0      tink05, 255 in arg2
+sound 0 4718 0 255 0      tink05, 255 in arg3
+sound 0 4718 0 0 255      tink05, 255 in arg4
+sound 0 4718 255 255 0    tink05, 255 in arg2 and arg3
+sound 4718 255 0 0 0      tink05, id in arg0 and 255 in arg1
+sound 1 4718 255 0 0      tink05, 1 in arg0 (a unit id?) and 255 in arg2
+sound 0 14 255 0 0        questdone, 255 in arg2 — the one that WAS audible, for comparison
 
 player Rendan
