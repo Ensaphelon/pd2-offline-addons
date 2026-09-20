@@ -775,8 +775,35 @@ void probe_dump_paths(void)
 /* Runs on every rendered frame. Counting the grail candidates lying in view is the cheapest
    thing that proves the whole chain works — the hook fires, the unit table reads, the items are
    there and their quality and identity come out — before a single pixel is drawn. */
+void server_on_new_object(int objects_now);
+
+/* How many objects the world is holding. Cheap enough to do every frame — 128 buckets and a
+   short chain each — and it is the trigger the server watcher needs. */
+static int count_objects(const BYTE *client)
+{
+    const BYTE *row = client + 0x10A608 + 2 * (UNIT_BUCKETS * 4);
+    int seen = 0;
+    for (int bucket = 0; bucket < UNIT_BUCKETS; bucket++) {
+        DWORD address = 0;
+        if (!safe_read(row + bucket * 4, &address, 4)) continue;
+        int depth = 0;
+        while (address && depth++ < 64) {
+            unit_head unit;
+            if (!read_unit(address, &unit) || unit.type != 2) break;
+            seen++;
+            DWORD next = 0;
+            if (!safe_read((const void *)(UINT_PTR)(address + 0xEC), &next, 4)) break;
+            address = next;
+        }
+    }
+    return seen;
+}
+
 void frame_tick(void)
 {
+    HMODULE client_now = GetModuleHandleA("D2Client.dll");
+    if (client_now) server_on_new_object(count_objects((const BYTE *)client_now));
+
     static DWORD last;
     DWORD now = GetTickCount();
     if (now - last < 2000) return;     /* the log is for a person, not for 60fps */

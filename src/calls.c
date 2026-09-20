@@ -261,27 +261,26 @@ BOOL server_watch_install(void)
     return game_hooks > 0;
 }
 
-/* Keys turned out to be unreliable — macOS took F11 before the game ever saw it — so this runs
-   on a timer instead. Every window, whatever moved a little is printed and the baseline resets,
-   so casting a portal at any moment lands inside some window and shows up by itself. */
-void server_window(void)
+/* A timer window was the wrong instrument: it could not say which of its windows held the portal,
+   and it truncated the very one that mattered. The object appearing IS the event, and the plugin
+   can see that for itself — so the baseline is re-taken every frame, and the moment the number
+   of objects in the world goes up, what moved during THAT frame is printed. No keys, no timing,
+   and the answer is one frame wide instead of four seconds. */
+void server_on_new_object(int objects_now)
 {
-    static DWORD last;
-    DWORD now = GetTickCount();
+    static int objects_before = -1;
     if (!game_hooks && !server_watch_install()) return;
-    if (now - last < 4000) return;
-    last = now;
 
-    int shown = 0;
-    for (LONG threshold = 1; threshold <= 6 && shown < 24; threshold++) {
-        for (int i = 0; i < game_hooks && shown < 24; i++) {
+    if (objects_before >= 0 && objects_now > objects_before) {
+        log_line("server: an object appeared (%d -> %d). During that frame, D2Game called —",
+                 objects_before, objects_now);
+        for (int i = 0; i < game_hooks; i++) {
             LONG moved = game_counts[i] - game_baseline[i];
-            if (moved != threshold) continue;
-            if (!shown) log_line("server: in the last window these moved a little —");
-            log_line("    D2Common #%u  +%ld", game_ordinals[i], moved);
-            shown++;
+            if (moved > 0) log_line("    D2Common #%u  x%ld", game_ordinals[i], moved);
         }
+        log_line("server: that is the whole list for that frame");
     }
+    objects_before = objects_now;
     for (int i = 0; i < game_hooks; i++) game_baseline[i] = game_counts[i];
 }
 
