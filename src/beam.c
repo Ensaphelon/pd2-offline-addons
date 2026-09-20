@@ -220,12 +220,9 @@ void beam_inspect(int ordinal, const DWORD *args)
  * inside the floor-tile loop, where #10076 and #10023 alternate for thousands of calls. So it
  * keeps the last hundred and sixty instead — the end of the frame is the part in question. */
 static volatile LONG trace_left;
-static struct { WORD ordinal; DWORD at; } trace_seen[160];
-static int trace_count, trace_first;
+static DWORD trace_first[128], trace_last[128], trace_hits[128];
 static DWORD trace_calls;
 static int trace_pending;
-
-#define TRACE_MAX ((int)(sizeof(trace_seen) / sizeof(trace_seen[0])))
 
 static void trace_arm(void)
 {
@@ -242,40 +239,48 @@ int beam_draw_on(void)
     return cfg.drawon;
 }
 
+/* First call, last call and how many, per ordinal. Recording every turn instead filled the
+   buffer with the floor-tile loop and then, keeping the tail, with the panel at the end; what
+   the question actually needs is where in the frame each call LIVES, and fifty-eight of those
+   fit on a screen where twelve thousand turns never will. */
 void beam_trace(int ordinal)
 {
-    int last = (trace_first + trace_count - 1) % TRACE_MAX;
+    int slot = ordinal - 10000;
     trace_calls++;
-    if (trace_count && trace_seen[last].ordinal == (WORD)ordinal) return;
-
-    if (trace_count == TRACE_MAX) {
-        trace_seen[trace_first].ordinal = (WORD)ordinal;
-        trace_seen[trace_first].at = trace_calls;
-        trace_first = (trace_first + 1) % TRACE_MAX;
-        return;
-    }
-    trace_seen[(trace_first + trace_count) % TRACE_MAX].ordinal = (WORD)ordinal;
-    trace_seen[(trace_first + trace_count) % TRACE_MAX].at = trace_calls;
-    trace_count++;
+    if (slot < 0 || slot >= 128) return;
+    if (!trace_hits[slot]) trace_first[slot] = trace_calls;
+    trace_last[slot] = trace_calls;
+    trace_hits[slot]++;
 }
 
 static void trace_report(void)
 {
     char line[220];
-    int used = 0;
+    int used = 0, left = 1;
 
-    log_line("trace: the last %d turns of one frame of %lu calls — ordinal@how-far-in",
-             trace_count, (unsigned long)trace_calls);
-    for (int i = 0; i < trace_count; i++) {
-        int at = (trace_first + i) % TRACE_MAX;
-        int wrote = snprintf(line + used, sizeof(line) - used, "%s#%u@%lu",
-                             used ? "  " : "    ", trace_seen[at].ordinal,
-                             (unsigned long)trace_seen[at].at);
+    log_line("trace: one frame of %lu calls — ordinal first..last xhowmany, in order",
+             (unsigned long)trace_calls);
+    while (left) {
+        DWORD best = 0xFFFFFFFF;
+        int pick = -1;
+        left = 0;
+        for (int i = 0; i < 128; i++) {
+            if (!trace_hits[i]) continue;
+            left = 1;
+            if (trace_first[i] < best) { best = trace_first[i]; pick = i; }
+        }
+        if (pick < 0) break;
+        int wrote = snprintf(line + used, sizeof(line) - used, "%s#%d %lu..%lu x%lu",
+                             used ? "   " : "    ", 10000 + pick,
+                             (unsigned long)trace_first[pick], (unsigned long)trace_last[pick],
+                             (unsigned long)trace_hits[pick]);
+        trace_hits[pick] = 0;
         if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) {
             line[used] = 0;
             log_line("%s", line);
             used = 0;
-            i--;
+            trace_hits[pick] = 1;      /* put it back and start a fresh line */
+            trace_first[pick] = best;
             continue;
         }
         used += wrote;
@@ -290,7 +295,7 @@ static void trace_step(void)
 {
     if (trace_left > 0) { trace_left = 0; trace_report(); trace_pending = 0; return; }
     if (!trace_pending) return;
-    trace_count = trace_first = 0;
+    memset(trace_hits, 0, sizeof(trace_hits));
     trace_calls = 0;
     trace_left = 1;
 }
@@ -497,10 +502,32 @@ static void mark_spot(int x, int y)
     rect(x - 1, y - 9, x + 2, y + 10, 0x9A, 5);
 }
 
+/* The player's cross sits on the player's feet, so the transform is sound and whatever is wrong
+   is in the item's own coordinates. Eyes and a name plate cannot measure that — the plate is the
+   loot filter's and is not promised to be centred on anything — so the numbers are printed and
+   the test is to stand ON the item, where the two sets must agree. */
+static void report_item(const BYTE *base, int ix, int iy, int isx, int isy)
+{
+    static DWORD last_at;
+    if (last_at && GetTickCount() - last_at < 1000) return;
+    last_at = GetTickCount();
+
+    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
+    void *player = get_player();
+    if (!player) return;
+    get_coord_fn gx = (get_coord_fn)(base + OFF_GETUNITX);
+    get_coord_fn gy = (get_coord_fn)(base + OFF_GETUNITY);
+    int px = gx(player), py = gy(player), psx = 0, psy = 0;
+    world_to_screen(base, px, py, &psx, &psy);
+    log_line("where: item world %d,%d -> screen %d,%d   player world %d,%d -> screen %d,%d"
+             "   apart %d,%d", ix, iy, isx, isy, px, py, psx, psy, ix - px, iy - py);
+}
+
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
 {
     int x, y;
     if (!world_to_screen(base, world_x, world_y, &x, &y)) return;
+    if (cfg.mark) report_item(base, world_x, world_y, x, y);
     x += cfg.dx;
     y += cfg.dy;
     draw_foot_at(x, y, tick);
