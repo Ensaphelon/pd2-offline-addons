@@ -354,6 +354,77 @@ static void scan_client_image_for_unit_slots(void)
     log_line("");
 }
 
+/* Found by sweeping D2Client's data for slots pointing at something unit-shaped: 127 consecutive
+   ones, every last of them an item. That is the item row of the engine's unit hash table — 128
+   buckets, each the head of a chain — and it is a fixed address in a fixed module, which is the
+   whole reason for having gone looking. A renderer cannot scan two gigabytes per frame; it can
+   read this. */
+#define OFF_D2CLIENT_UNIT_TABLE_ITEMS 0x10AE08
+#define UNIT_BUCKETS 128
+
+/* Where the next unit in a bucket lives. Not assumed — the two candidates are tried and whichever
+   produces another item unit is reported, so the log says which one this build actually uses. */
+static const int LINK_CANDIDATES[] = { 0xEC };
+
+typedef struct {
+    DWORD type, txtfile, unit_id, mode, item_data, seed;
+} unit_head;
+
+static BOOL read_unit(DWORD address, unit_head *out)
+{
+    /* Through +0x20, because the seed is what the save calls the item's guid and it is the only
+       field that names one particular item. Matching a unit by its base number instead left two
+       readings of the same drop looking like a contradiction. */
+    DWORD head[9];
+    if (!safe_read((const void *)(UINT_PTR)address, head, sizeof(head))) return FALSE;
+    out->type = head[0]; out->txtfile = head[1];
+    out->unit_id = head[3]; out->mode = head[4]; out->item_data = head[5];
+    out->seed = head[8];
+    return TRUE;
+}
+
+static void walk_unit_table(void)
+{
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) { log_line("walk: D2Client.dll is not loaded"); return; }
+    const BYTE *table = (const BYTE *)client + OFF_D2CLIENT_UNIT_TABLE_ITEMS;
+    log_line("walk: item units through D2Client.dll+0x%X", OFF_D2CLIENT_UNIT_TABLE_ITEMS);
+
+    for (unsigned li = 0; li < sizeof(LINK_CANDIDATES) / sizeof(LINK_CANDIDATES[0]); li++) {
+        int link = LINK_CANDIDATES[li];
+        int seen = 0, chained = 0;
+        log_line("  trying next-pointer at +0x%02X", link);
+        for (int bucket = 0; bucket < UNIT_BUCKETS; bucket++) {
+            DWORD address = 0;
+            if (!safe_read(table + bucket * 4, &address, 4)) continue;
+            int depth = 0;
+            while (address && depth < 64) {
+                unit_head unit;
+                if (!read_unit(address, &unit) || unit.type != 4) break;
+                DWORD quality = 0, file_index = 0;
+                safe_read((const void *)(UINT_PTR)unit.item_data, &quality, 4);
+                safe_read((const void *)(UINT_PTR)(unit.item_data + 0x28), &file_index, 4);
+                /* Only the interesting ones: an inventory full of junk would bury the answer. */
+                if (quality == 5 || quality == 7) {
+                    log_line("    unit %p guid=%08X txtfile=%-4lu mode=%lu %s id=%lu",
+                             (void *)(UINT_PTR)address, unit.seed,
+                             (unsigned long)unit.txtfile, (unsigned long)unit.mode,
+                             quality == 7 ? "unique" : "set   ", (unsigned long)file_index);
+                }
+                seen++;
+                if (depth > 0) chained++;
+                DWORD next = 0;
+                if (!safe_read((const void *)(UINT_PTR)(address + link), &next, 4)) break;
+                address = next;
+                depth++;
+            }
+        }
+        log_line("  +0x%02X: %d item unit(s), %d of them reached by following the link",
+                 link, seen, chained);
+    }
+    log_line("");
+}
+
 void probe_run(void)
 {
     if (target_count == 0) {
@@ -366,6 +437,7 @@ void probe_run(void)
     for (int i = 0; i < target_count; i++) scan_for(&targets[i]);
     scan_for_referrers();
     scan_client_image_for_unit_slots();
+    walk_unit_table();
     log_line("=== probe pass done in %lu ms ===", (unsigned long)(GetTickCount() - started));
 }
 
