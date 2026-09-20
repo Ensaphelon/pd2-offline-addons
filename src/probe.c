@@ -447,7 +447,13 @@ static void find_player_and_its_slot(void)
        not: it appears at the start of PlayerData, so finding the name and then finding who
        points at it walks straight to the unit with nothing left to guess. */
     SIZE_T name_len = strlen(player_name) + 1;
-    DWORD name_at = 0, unit = 0;
+    /* Every place the name appears, not the first: it turns up in save buffers and UI text too,
+       and the first hit was at an odd address — PlayerData is heap-allocated and aligned, so
+       that one could never have been it. */
+    #define MAX_NAMES 64
+    DWORD names[MAX_NAMES];
+    int name_count = 0;
+    DWORD unit = 0;
 
     SYSTEM_INFO info;
     GetSystemInfo(&info);
@@ -471,25 +477,29 @@ static void find_player_and_its_slot(void)
                     if (count > CHUNK) count = CHUNK;
                     if (!safe_read(base + done, chunk, count)) continue;
                     if (phase == 0) {
-                        for (SIZE_T o = 0; o + name_len <= count; o++) {
+                        for (SIZE_T o = 0; o + name_len <= count && name_count < MAX_NAMES; o++) {
                             if (memcmp(chunk + o, player_name, name_len)) continue;
-                            name_at = (DWORD)(UINT_PTR)(base + done + o);
-                            log_line("  the name sits at %08X", name_at);
-                            break;
+                            names[name_count++] = (DWORD)(UINT_PTR)(base + done + o);
                         }
-                        if (name_at) break;
                     } else {
                         for (SIZE_T o = 0; o + 4 <= count; o += 4) {
-                            if (*(const DWORD *)(chunk + o) != name_at) continue;
+                            DWORD value = *(const DWORD *)(chunk + o);
+                            int matched = 0;
+                            for (int n = 0; n < name_count; n++)
+                                if (value == names[n]) { matched = 1; break; }
+                            if (!matched) continue;
                             DWORD slot = (DWORD)(UINT_PTR)(base + done + o);
-                            DWORD type = 0;
                             /* PlayerData hangs off UnitAny+0x14, so the unit starts there. */
                             DWORD candidate = slot - UNIT_TO_ITEMDATA;
-                            if (!safe_read((const void *)(UINT_PTR)candidate, &type, 4)) continue;
-                            if (type != 0) continue;
+                            DWORD head[4];
+                            if (!safe_read((const void *)(UINT_PTR)candidate, head, sizeof(head)))
+                                continue;
+                            log_line("  %08X points at the name; unit would start at %08X "
+                                     "(dwType=%lu class=%lu)", slot, candidate,
+                                     (unsigned long)head[0], (unsigned long)head[1]);
+                            if (head[0] != 0) continue;
                             unit = candidate;
-                            log_line("  a unit at %08X points at it, dwType=0 — that is the player",
-                                     unit);
+                            log_line("  -> dwType=0, that is the player");
                             break;
                         }
                         if (unit) break;
@@ -498,9 +508,21 @@ static void find_player_and_its_slot(void)
             }
             if (next <= address) break;
             address = next;
-            if (phase == 0 && name_at) break;
         }
-        if (phase == 0 && !name_at) { log_line("  the name is nowhere in memory"); return; }
+        if (phase == 0) {
+            log_line("  the name appears %d time(s) in memory", name_count);
+            /* PlayerData starts with the name and continues with quest/waypoint pointers, so the
+               bytes AFTER each occurrence say which one it is. Guessing from the address alone
+               has now failed twice; this shows the evidence instead. */
+            for (int n = 0; n < name_count; n++) {
+                log_line("    occurrence %d at %08X%s", n, names[n],
+                         (names[n] & 3) ? "  (unaligned — cannot be a struct start)" : "");
+                if ((names[n] & 3) == 0)
+                    dump_range((const BYTE *)(UINT_PTR)names[n],
+                               (const BYTE *)(UINT_PTR)names[n], 0x40);
+            }
+            if (!name_count) { log_line("  nowhere at all"); return; }
+        }
     }
     if (!unit) { log_line("  nothing unit-shaped points at the name"); return; }
 
