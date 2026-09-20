@@ -47,9 +47,13 @@ static char player_name[32];
      arg0  a unit pointer, dereferenced when non-zero, so the sound is placed in the world.
            Zero plays it without a position. Passing 1 here is what took the game down.
      arg1  the sound id. Checked >= 1 and used to index Sounds.txt (stride 0x92).
-     arg2  clamped to 0..255 and stored as a dword — the priority.
-     arg3  clamped to 0..255 and stored as a BYTE — the volume. This is the one that matters,
-           and it is the one we had been passing zero into.
+     arg2  clamped to 0..255 — the VOLUME. Zero is silence; this is the one that matters.
+     arg3  clamped to 0..255 — the priority. Changing it alone is inaudible.
+
+   The code shows arg2 going into a dword field and arg3 into a byte one, and reading that as
+   "the byte must be the volume" was a guess that the ear then disproved: F1 and F2 differed only
+   in arg3 and sounded identical, while F3 and F4 held arg2 at zero and made no sound at all. The
+   order in the exported name — Volume, then Priority — had said so all along.
      arg4  stored verbatim; purpose unknown, zero is what the game's own callers appear to use.
 
    Which slider governs the result is not an argument at all: it is the Sound Group column of

@@ -1,9 +1,13 @@
-# One key, one sound. Press each as many times as you like, in any order.
-sound 0 4718 255 255 0    F1  everything at full
-sound 0 4718 255 0 0      F2  arg3 = 0
-sound 0 4718 0 255 0      F3  arg2 = 0
-sound 0 4718 0 0 0        F4  both at 0
-sound 0 4714 255 255 0    F5  a different tink, full
-sound 0 14 255 255 0      F6  questdone — a different sound channel
+# play(unit=0, soundId, volume, priority, 0) — volume is the second number, confirmed by ear.
+# The loot-filter channel holds sixteen sounds, 4714..4729. One key each.
+sound 0 4714 255 255 0    F1  tink01
+sound 0 4717 255 255 0    F2  tink04
+sound 0 4720 255 255 0    F3  tink07
+sound 0 4723 255 255 0    F4  tink10
+sound 0 4726 255 255 0    F5  tink13
+sound 0 4729 255 255 0    F6  tink16
+sound 0 14 255 255 0      F7  questdone — the holy one, but on the wrong channel
+sound 0 40 255 255 0      F8  spotlight
+sound 0 45 255 255 0      F9  light shaft
 
 player Rendan
