@@ -8,3 +8,4 @@
 # And the ids themselves, to see where else they live.
 274 Dwarf Star catalog id
 93 M'avina's Tenet catalog id
+player Rendan

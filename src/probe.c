@@ -35,6 +35,7 @@ static int target_count;
    them as if they were game data — a value we are hunting for is, by construction, also sitting
    in the config we loaded it from. */
 static const BYTE *self_start, *self_end;
+static char player_name[32];
 
 #define CHUNK 0x10000
 static BYTE chunk[CHUNK];
@@ -66,8 +67,13 @@ static void load_targets(void *module)
         return;
     }
     char line[256];
-    while (target_count < MAX_TARGETS && fgets(line, sizeof(line), f)) {
+    while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        if (sscanf(line, "player %31[^\r\n]", player_name) == 1) {
+            log_line("probe: the character to anchor on is \"%s\"", player_name);
+            continue;
+        }
+        if (target_count >= MAX_TARGETS) continue;
         unsigned long value = 0;
         char label[64] = {0};
         if (sscanf(line, "%li %63[^\r\n]", (long *)&value, label) < 1) continue;
@@ -433,54 +439,71 @@ static void walk_unit_table(void)
    carries -1. So the player is the unit with dwType 0 and dwUnitId 1. */
 static void find_player_and_its_slot(void)
 {
-    log_line("player: looking for a unit with dwType=0 and dwUnitId=1");
-    DWORD player = 0;
+    if (!player_name[0]) { log_line("player: no 'player <name>' line in the config"); return; }
+    log_line("player: anchoring on the name \"%s\"", player_name);
+
+    /* Two guesses at what the player unit looks like both matched rubbish — dwType 0 with
+       dwUnitId 1 is a zero and a one, and memory is full of those. The character's own name is
+       not: it appears at the start of PlayerData, so finding the name and then finding who
+       points at it walks straight to the unit with nothing left to guess. */
+    SIZE_T name_len = strlen(player_name) + 1;
+    DWORD name_at = 0, unit = 0;
 
     SYSTEM_INFO info;
     GetSystemInfo(&info);
-    BYTE *address = (BYTE *)info.lpMinimumApplicationAddress;
     BYTE *limit = (BYTE *)info.lpMaximumApplicationAddress;
 
-    while (address < limit && !player) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery(address, &mbi, sizeof(mbi))) break;
-        BYTE *next = (BYTE *)mbi.BaseAddress + mbi.RegionSize;
-        if (mbi.State == MEM_COMMIT && readable(mbi.Protect) &&
-            (const BYTE *)mbi.BaseAddress >= self_end) {
-            const BYTE *base = (const BYTE *)mbi.BaseAddress;
-            for (SIZE_T done = 0; done < mbi.RegionSize && !player; done += CHUNK) {
-                SIZE_T count = mbi.RegionSize - done;
-                if (count > CHUNK) count = CHUNK;
-                if (!safe_read(base + done, chunk, count)) continue;
-                for (SIZE_T offset = 0; offset + 0x20 <= count; offset += 4) {
-                    const DWORD *w = (const DWORD *)(chunk + offset);
-                    if (w[0] != 0 || w[3] != 1) continue;              /* dwType, dwUnitId */
-                    if (w[1] > 7) continue;                            /* class, 0..6 */
-                    /* A name at the start of PlayerData is the proof. The first candidate this
-                       ever found had an empty one — dwType 0 with dwUnitId 1 is a common enough
-                       pair of zeros-and-ones to hit by accident, so a candidate is only accepted
-                       once it can produce a real character name. */
-                    char name[17] = {0};
-                    if (!safe_read((const void *)(UINT_PTR)w[5], name, 16)) continue;
-                    name[16] = 0;
-                    if (!isalpha((unsigned char)name[0])) continue;
-                    int plausible = 1;
-                    for (int c = 0; c < 15 && name[c]; c++)
-                        if (name[c] < 32 || name[c] > 126) { plausible = 0; break; }
-                    if (!plausible) continue;
-                    player = (DWORD)(UINT_PTR)(base + done + offset);
-                    log_line("  player %08X: class=%lu pPlayerData=%08X name=\"%s\"",
-                             player, (unsigned long)w[1], w[5], name);
-                    break;
+    for (int phase = 0; phase < 2 && !unit; phase++) {
+        BYTE *address = (BYTE *)info.lpMinimumApplicationAddress;
+        while (address < limit) {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (!VirtualQuery(address, &mbi, sizeof(mbi))) break;
+            BYTE *next = (BYTE *)mbi.BaseAddress + mbi.RegionSize;
+            /* Skip only OUR OWN image. An earlier version wrote `>= self_end`, which threw
+               away every region below this DLL — that is the whole game heap, and it is why the
+               character's own name could not be found anywhere in memory. */
+            if (mbi.State == MEM_COMMIT && readable(mbi.Protect) &&
+                !((const BYTE *)mbi.BaseAddress >= self_start &&
+                  (const BYTE *)mbi.BaseAddress < self_end)) {
+                const BYTE *base = (const BYTE *)mbi.BaseAddress;
+                for (SIZE_T done = 0; done < mbi.RegionSize; done += CHUNK) {
+                    SIZE_T count = mbi.RegionSize - done;
+                    if (count > CHUNK) count = CHUNK;
+                    if (!safe_read(base + done, chunk, count)) continue;
+                    if (phase == 0) {
+                        for (SIZE_T o = 0; o + name_len <= count; o++) {
+                            if (memcmp(chunk + o, player_name, name_len)) continue;
+                            name_at = (DWORD)(UINT_PTR)(base + done + o);
+                            log_line("  the name sits at %08X", name_at);
+                            break;
+                        }
+                        if (name_at) break;
+                    } else {
+                        for (SIZE_T o = 0; o + 4 <= count; o += 4) {
+                            if (*(const DWORD *)(chunk + o) != name_at) continue;
+                            DWORD slot = (DWORD)(UINT_PTR)(base + done + o);
+                            DWORD type = 0;
+                            /* PlayerData hangs off UnitAny+0x14, so the unit starts there. */
+                            DWORD candidate = slot - UNIT_TO_ITEMDATA;
+                            if (!safe_read((const void *)(UINT_PTR)candidate, &type, 4)) continue;
+                            if (type != 0) continue;
+                            unit = candidate;
+                            log_line("  a unit at %08X points at it, dwType=0 — that is the player",
+                                     unit);
+                            break;
+                        }
+                        if (unit) break;
+                    }
                 }
             }
+            if (next <= address) break;
+            address = next;
+            if (phase == 0 && name_at) break;
         }
-        if (next <= address) break;
-        address = next;
+        if (phase == 0 && !name_at) { log_line("  the name is nowhere in memory"); return; }
     }
-    if (!player) { log_line("  no player unit found"); return; }
+    if (!unit) { log_line("  nothing unit-shaped points at the name"); return; }
 
-    /* And now the thing worth having: a fixed slot in D2Client that holds it. */
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     const BYTE *base = (const BYTE *)client;
@@ -494,7 +517,7 @@ static void find_player_and_its_slot(void)
         for (SIZE_T offset = 0; offset + 4 <= section->Misc.VirtualSize; offset += 4) {
             DWORD value = 0;
             if (!safe_read(from + offset, &value, 4)) continue;
-            if (value != player) continue;
+            if (value != unit) continue;
             log_line("  STATIC D2Client.dll+0x%06X holds the player unit",
                      (unsigned)(from + offset - base));
             found++;
