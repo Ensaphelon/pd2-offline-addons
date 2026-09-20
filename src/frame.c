@@ -156,7 +156,6 @@ static void __stdcall our_swap(int interval)
         last_report = now;
     }
     frame_tick();
-    calls_draw_test_box();
     if (original_swap) original_swap(interval);
 }
 

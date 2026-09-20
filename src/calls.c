@@ -34,9 +34,47 @@ static BYTE *thunks;
    A full ordering would need real logic inside a hand-assembled thunk; "the most recent one"
    needs one more instruction, and the frame hook reads it at exactly the right moment. */
 static volatile LONG last_index = -1;
+/* Which call was last in the PREVIOUS frame — so the draw goes out after everything the game
+   itself drew, without anyone having to guess which ordinal that is. */
+static volatile LONG draw_on = -1;
+void calls_draw_test_box(void);
 
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
+/* Drawing has to happen INSIDE the game's frame — twice now it was done at the Glide swap, when
+   the frame is already composed, and twice nothing appeared. So the thunk gains a call to us.
+   Registers and flags are saved and the stack is never touched, which means this works for any
+   ordinal whatever its signature: the original still sees exactly the arguments it was passed.
+
+     60              pushad
+     9C              pushfd
+     68 <index>      push index
+     E8 <rel32>      call calls_at
+     83 C4 04        add esp,4
+     9D              popfd
+     61              popad
+     FF 05 <counter> inc
+     FF 25 <orig>    jmp                                                                    */
+void __cdecl calls_at(int index);
+
+static void write_draw_thunk(BYTE *at, int index, volatile LONG *counter, void **original)
+{
+    int i = 0;
+    at[i++] = 0x60;
+    at[i++] = 0x9C;
+    at[i++] = 0x68; memcpy(at + i, &index, 4); i += 4;
+    at[i++] = 0xE8;
+    {
+        LONG rel = (LONG)((BYTE *)calls_at - (at + i + 4));
+        memcpy(at + i, &rel, 4); i += 4;
+    }
+    at[i++] = 0x83; at[i++] = 0xC4; at[i++] = 0x04;
+    at[i++] = 0x9D;
+    at[i++] = 0x61;
+    at[i++] = 0xFF; at[i++] = 0x05; memcpy(at + i, &counter, 4); i += 4;
+    at[i++] = 0xFF; at[i++] = 0x25; memcpy(at + i, &original, 4);
+}
+
 static void write_thunk(BYTE *at, int index, volatile LONG *counter, void **original)
 {
     volatile LONG *last = &last_index;
@@ -113,7 +151,7 @@ BOOL calls_watch_install(void)
 
     for (int i = 0; i < count; i++) {
         BYTE *thunk = thunks + i * 32;
-        write_thunk(thunk, i, &counts[i], &originals[i]);
+        write_draw_thunk(thunk, i, &counts[i], &originals[i]);
         void *previous = NULL;
         void **slot = redirect_ordinal(client, "D2gfx.dll", wanted[i], thunk, &previous);
         if (!slot) continue;
@@ -134,6 +172,7 @@ void calls_report(DWORD frames)
 {
     if (!hook_count || !frames) return;
     LONG last = last_index;
+    draw_on = last;
     if (last >= 0 && last < hook_count)
         log_line("calls: the LAST D2Win call before the frame was handed over is #%u",
                  ordinals[last]);
@@ -151,6 +190,12 @@ void calls_report(DWORD frames)
    anything drawn through it exists on every renderer instead of only under D2GL.
    The six are almost certainly left, top, right, bottom, colour, transparency. */
 typedef void (__stdcall *gfx_draw6_fn)(int, int, int, int, int, int);
+
+void __cdecl calls_at(int index)
+{
+    last_index = index;
+    if (index == draw_on) calls_draw_test_box();
+}
 
 void calls_draw_test_box(void)
 {
