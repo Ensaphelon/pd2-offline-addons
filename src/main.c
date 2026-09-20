@@ -16,6 +16,8 @@ void probe_dump_paths(void);
 void probe_survey(void);
 void server_baseline(void);
 void server_delta(void);
+void beam_init(void *module);
+void beam_reload(void);
 
 /* One F-key per configured line: F1 plays line 1, F2 line 2, and so on. Sequences and paced
    presses both failed for the same reason — they asked the listener to keep time. A key that
@@ -27,6 +29,8 @@ static DWORD WINAPI bootstrap(LPVOID module)
     log_init(module);
     log_line("pd2-holy-grail probe attached");
     probe_init(module);
+    beam_init(module);
+    beam_reload();
     log_line("F1..F12 each play one configured line; the memory pass runs by itself in %d seconds",
              AUTO_PASS_MS / 1000);
 
@@ -39,6 +43,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     DWORD attached = GetTickCount();
     BOOL auto_done = FALSE;
     BOOL was_down[12] = {0};
+    unsigned ticks = 0;
     BOOL hooked = FALSE;
     for (;;) {
         if (!auto_done && GetTickCount() - attached >= AUTO_PASS_MS) {
@@ -49,6 +54,10 @@ static DWORD WINAPI bootstrap(LPVOID module)
         /* D2Gfx and the Glide wrapper both load after us, so the hook goes in once they are
            there rather than at startup. */
         if (!hooked) hooked = frame_hook_install();
+
+        /* beam.txt is re-read while the game runs, so the light can be tuned by editing a line
+           and looking at the screen rather than by rebuilding and restarting. */
+        if ((++ticks % 25) == 0) beam_reload();
 
         for (int i = 0; i < 12; i++) {
             BOOL down = (GetAsyncKeyState(VK_F1 + i) & 0x8000) != 0;

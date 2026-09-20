@@ -37,7 +37,7 @@ static volatile LONG last_index = -1;
 /* Which call was last in the PREVIOUS frame — so the draw goes out after everything the game
    itself drew, without anyone having to guess which ordinal that is. */
 static volatile LONG draw_on = -1;
-void calls_draw_test_box(void);
+void beam_draw(void);
 
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
@@ -202,92 +202,7 @@ typedef void (__stdcall *gfx_draw6_fn)(int, int, int, int, int, int);
 void __cdecl calls_at(int index)
 {
     last_index = index;
-    if (index == draw_on) calls_draw_test_box();
-}
-
-/* World to screen. The camera is centred on the player, so a point's place on screen follows
-   from how far it is from the player: D2's ground is isometric, one subtile being 16 pixels
-   across and 8 down. Drawn at a FIXED point in the world rather than a fixed point on screen —
-   if the transform is right the box stays on its patch of ground while the player walks, and if
-   it is wrong it slides, which is a difference nobody can mistake. */
-typedef void *(__stdcall *get_player_fn)(void);
-typedef int (__fastcall *get_coord_fn)(void *unit);
-
-#define OFF_GETPLAYERUNIT 0xA4D60
-#define OFF_GETUNITX      0x1630
-#define OFF_GETUNITY      0x1660
-#define OFF_SCREENSIZEX   0xDBC48
-#define OFF_SCREENSIZEY   0xDBC4C
-
-static int world_to_screen(int world_x, int world_y, int *out_x, int *out_y)
-{
-    HMODULE client = GetModuleHandleA("D2Client.dll");
-    if (!client) return 0;
-    const BYTE *base = (const BYTE *)client;
-    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
-    get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
-    get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
-
-    void *player = get_player();
-    if (!player) return 0;
-    int px = get_x(player), py = get_y(player);
-    DWORD width = *(const DWORD *)(base + OFF_SCREENSIZEX);
-    DWORD height = *(const DWORD *)(base + OFF_SCREENSIZEY);
-    if (width < 320 || width > 4096) width = 800;
-    if (height < 200 || height > 4096) height = 600;
-
-    int dx = world_x - px, dy = world_y - py;
-    *out_x = (int)(width / 2) + (dx - dy) * 16;
-    *out_y = (int)(height / 2) + (dx + dy) * 8;
-    return 1;
-}
-
-void calls_draw_test_box(void)
-{
-    static gfx_draw6_fn draw;
-    if (!draw) {
-        HMODULE gfx = GetModuleHandleA("D2gfx.dll");
-        if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
-        if (!gfx) return;
-        draw = (gfx_draw6_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10014));
-        log_line("draw: D2gfx #10014 DrawRectangle at %p", (void *)draw);
-        if (!draw) return;
-    }
-    /* A shaft over every unique or set item lying on the ground. Built out of stacked bands
-       rather than one block: each is drawn with a blend, so the overlap makes the bottom bright
-       and the top faint, which is what a beam of light does. Nothing is loaded and nothing is
-       animated — this is the game's own rectangle, six times. */
-    HMODULE client = GetModuleHandleA("D2Client.dll");
-    if (!client) return;
-    const BYTE *row = (const BYTE *)client + 0x10A608 + 4 * (128 * 4);
-    get_coord_fn get_x = (get_coord_fn)((const BYTE *)client + OFF_GETUNITX);
-    get_coord_fn get_y = (get_coord_fn)((const BYTE *)client + OFF_GETUNITY);
-
-    for (int bucket = 0; bucket < 128; bucket++) {
-        DWORD address = *(const DWORD *)(row + bucket * 4);
-        int depth = 0;
-        while (address && depth++ < 64) {
-            const DWORD *unit = (const DWORD *)(UINT_PTR)address;
-            if (unit[0] != 4) break;              /* dwType: item */
-            DWORD mode = unit[4];                 /* dwMode: 3 is lying on the ground */
-            DWORD item_data = unit[5];
-            if (mode == 3 && item_data) {
-                DWORD quality = *(const DWORD *)(UINT_PTR)item_data;
-                if (quality == 5 || quality == 7) {   /* set, unique */
-                    int wx = get_x((void *)unit), wy = get_y((void *)unit);
-                    int sx, sy;
-                    if (world_to_screen(wx, wy, &sx, &sy)) {
-                        for (int band = 0; band < 6; band++) {
-                            int top = sy - 30 - band * 22;
-                            int half = 11 - band;
-                            draw(sx - half, top, sx + half, top + 24, 0x9A, 5);
-                        }
-                    }
-                }
-            }
-            address = unit[0x3B];                 /* +0xEC, the next in this bucket */
-        }
-    }
+    if (index == draw_on) beam_draw();
 }
 
 /* ---------------------------------------------------------------------------------------- */

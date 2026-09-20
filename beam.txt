@@ -1,0 +1,10 @@
+# The light over a drop. Re-read while the game runs — save this file and the next frame uses it.
+
+art     beam      # beam (the Horadric shaft), jet (rays fanning out of the ground), or both
+trans   5         # D2's blend level: 0 solid, 1-4 progressively lighter, 5 blends
+colour  0         # palette shift; 0 leaves the art its own colour
+rate    3         # game frames per sprite frame — lower is faster
+dx      0         # nudge right
+dy      0         # nudge down
+anchor  offset    # offset (follows the view, including when a panel slides it) or player
+on      1

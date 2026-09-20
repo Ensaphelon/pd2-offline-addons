@@ -80,19 +80,58 @@ server-side unit, which exists in the same process in single player. The client'
 ground item carries a zero there, which is why community loot filters hard-code 107 item names
 instead of reading one.
 
-## What is not solved
+## Drawing
 
-Getting anything onto the screen. Six approaches failed, each for its own real reason:
+Solved, and the answer was published offsets rather than another memory sweep. Six earlier
+attempts each failed for its own real reason:
 
 | attempt | why not |
 |---|---|
 | a line through Glide's `grDrawLine` | draws at the frame swap, when the frame is already composed |
 | the frame buffer via `grLfbLock` | D2GL refuses the lock outright |
 | `D2gfx` ordinal #10010 from the swap | same timing problem |
-| the same from inside the game's frame | the call fires, nothing appears — its six arguments mean something else |
-| an overlay attached to the item's unit | needs the game's own attach function, which has no import table to enumerate |
+| the same from inside the game's frame | the call fires, nothing appears — it is DrawLine, given rectangle arguments |
+| an overlay attached to the item's unit | needs the game's own attach function, which nothing public names |
 | a client-side object spawned like a town portal | in single player no packet is involved, so there is nothing to replay |
 
-All six were searches for something the D2 community has had written down for twenty years. The
-next attempt should start from published 1.13c offsets — including BH's own, which are AGPL and
-therefore public — rather than from another memory sweep.
+What works, all from SlashDiablo Maphack's `D2Ptrs.h` (AGPL, so published) unless noted:
+
+| | |
+|---|---|
+| `D2Gfx #10014` | `DrawRectangle(x1, y1, x2, y2, colour, transparency)` |
+| `D2Gfx #10019` | `DrawCellContextEx(context, x, y, light, transparency, colour)` |
+| `D2Cmp #10006` | `InitCellFile(buffer, &out, source, line, version, name)` |
+| `D2Client+0x1630` / `+0x1660` | `GetUnitX` / `GetUnitY`, `__fastcall` |
+| `D2Client+0x11C1F8` | the view's origin on screen, a `POINT` |
+| `D2Client+0xF16B0` | the view's divisor, one in play |
+| `D2Client+0x10A608` | the unit table, six rows of 128 buckets, items in row four, linked through `+0xEC` |
+
+Drawing has to happen inside the game's own frame and through D2Gfx, which is what D2Client
+itself draws through — so it works on DDraw, Direct3D, Glide and D2GL alike, and D2GL improves it
+the same way it improves the game's own effects.
+
+**World to screen** is the automap's arithmetic, because the automap is drawn in the world's own
+projection: `x = (wx - wy) * 16 - origin.x + 8`, `y = (wx + wy) * 8 - origin.y - 8`. Taking the
+origin from the game rather than from half the screen width is what keeps the light on its item
+when a panel opens and the view slides sideways.
+
+## The art
+
+The light is the game's own. `data\global\overlays\HoradricLightBeam.dcc` is the shaft the
+Horadric quest shines, twenty-one frames of it, and `LIGHTJET.dcc` is a fan of rays that grows out
+of the ground and fades — thirteen.
+
+Both are DCC, and the only cell loader the game exposes understands DC6. So the DCC is decoded
+outside the game by `tools-beam/` (a port of OpenDiablo2's reader) and the frames are re-coded as
+a DC6 that never came from a file; `D2Cmp`'s `InitCellFile` takes it exactly the same way, which
+is how BH shows images of its own. `src/art.c` is generated:
+
+```bash
+python tools-beam/build_dc6.py src/art.c
+```
+
+`tools-beam/preview.py` and `roundtrip.py` render both the decode and the re-encode to PNG, which
+is how the format was checked before the game ever saw it.
+
+`beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
+which speed and where exactly it sits are a text edit and not a rebuild.
