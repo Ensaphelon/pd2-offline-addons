@@ -35,6 +35,14 @@ static int target_count;
    in the config we loaded it from. */
 static const BYTE *self_start, *self_end;
 
+/* Every UnitAny this pass managed to identify. Enumerating items one per frame means walking the
+   game's own list of them, and the way to find that list is to ask who points AT a unit we have
+   already located. A referrer inside D2Client's own data is the prize: that is a fixed address,
+   the same in every session, and therefore something the plugin can just read. */
+#define MAX_UNITS 32
+static const BYTE *found_units[MAX_UNITS];
+static int found_unit_count;
+
 /* The values to hunt live in a file beside the DLL rather than in the build, so a new experiment
    is a text edit rather than a recompile — and so this repository never carries anybody's real
    item ids. One per line: "<decimal or 0xhex> <label>". */
@@ -108,6 +116,12 @@ static void dump_range(const BYTE *at, const BYTE *origin, int count)
     }
 }
 
+static void remember_unit(const BYTE *unit)
+{
+    for (int i = 0; i < found_unit_count; i++) if (found_units[i] == unit) return;
+    if (found_unit_count < MAX_UNITS) found_units[found_unit_count++] = unit;
+}
+
 /* An item's guid sits at UnitAny+0x20 — established from this probe's own first pass, where every
    hit had dwType == 4 thirty-two bytes back and a pointer eight dwords in. That pointer is
    pItemData, and it is where the identity we are actually after lives. Following it is the whole
@@ -128,6 +142,7 @@ static void follow_item_data(const BYTE *hit)
     }
     log_line("    -> pItemData %p (offsets below are from ITS start)", (void *)item_data);
     dump_range(item_data, item_data, 0xB0);
+    remember_unit(unit);
 }
 
 static void dump_around(const BYTE *hit, const probe_target *target)
@@ -182,6 +197,55 @@ static void scan_for(const probe_target *target)
     log_line("");
 }
 
+/* One sweep looking for a pointer to any unit we found, rather than one sweep per unit: a sweep
+   costs about 70ms, and this way the cost does not grow with the number of items. */
+static void scan_for_referrers(void)
+{
+    if (found_unit_count == 0) {
+        log_line("referrers: no units were identified, nothing to trace");
+        return;
+    }
+    log_line("referrers: looking for anything pointing at the %d unit(s) found", found_unit_count);
+
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    BYTE *address = (BYTE *)info.lpMinimumApplicationAddress;
+    BYTE *limit = (BYTE *)info.lpMaximumApplicationAddress;
+    int shown = 0;
+
+    while (address < limit && shown < 64) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(address, &mbi, sizeof(mbi))) break;
+        BYTE *next = (BYTE *)mbi.BaseAddress + mbi.RegionSize;
+
+        if (mbi.State == MEM_COMMIT && readable(mbi.Protect)) {
+            const BYTE *base = (const BYTE *)mbi.BaseAddress;
+            for (SIZE_T offset = 0; offset + 4 <= mbi.RegionSize; offset += 4) {
+                const BYTE *at = base + offset;
+                if (at >= self_start && at < self_end) continue;
+                DWORD value = *(const DWORD *)at;
+                for (int i = 0; i < found_unit_count; i++) {
+                    if (value != (DWORD)(UINT_PTR)found_units[i]) continue;
+                    char where[128];
+                    describe(at, where, sizeof(where));
+                    /* A referrer in a loaded module is a STATIC slot — the thing worth having. */
+                    log_line("  %s  %p -> unit #%d (%p)",
+                             where[0] == 'h' ? "heap  " : "STATIC", (void *)at, i,
+                             (void *)found_units[i]);
+                    log_line("         at %s", where);
+                    shown++;
+                    break;
+                }
+                if (shown >= 64) break;
+            }
+        }
+        if (next <= address) break;
+        address = next;
+    }
+    if (shown == 0) log_line("  nothing points at them, which would be surprising");
+    log_line("");
+}
+
 void probe_run(void)
 {
     if (target_count == 0) {
@@ -190,7 +254,9 @@ void probe_run(void)
     }
     log_line("=== probe pass starting ===");
     DWORD started = GetTickCount();
+    found_unit_count = 0;
     for (int i = 0; i < target_count; i++) scan_for(&targets[i]);
+    scan_for_referrers();
     log_line("=== probe pass done in %lu ms ===", (unsigned long)(GetTickCount() - started));
 }
 
