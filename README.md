@@ -209,5 +209,14 @@ Nobody publishes where the flag lives. D2Gfx exports nine functions that do noth
 variable, and the plugin logs all nine whenever any of them moves, which is what toggling the
 setting does.
 
+**A cell file does not survive the renderer restarting.** Changing area takes it down and brings
+it back, and after that the pointers `InitCellFile` wrote into our own buffer stop leading to our
+cells: what gets drawn is whatever those addresses now mean — in the one case seen, a cut-off
+Diablo II logo — and then the game falls over. The log caught the shape of it exactly: several
+hundred frames of the light drawn happily, then six `layout:` lines, an area change, the frame
+rate halving, and the crash. So two small reads check the frame's own cell before every draw, and
+a set that stops checking out is simply built again. The old buffers are left alone rather than
+freed: the game was given their addresses.
+
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.

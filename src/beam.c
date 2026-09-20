@@ -347,6 +347,28 @@ static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned i
 
 static draw_cell_fn draw_cell;
 static void *cells_beam, *cells_jet, *cells_slant;
+static init_cell_fn cell_init;
+static volatile LONG cells_stale;
+static int rebuilds;
+
+/* Is this frame of this cell file still something the game will draw?
+ *
+ * Changing area takes the renderer down and brings it back up, and a cell file handed to
+ * InitCellFile does not survive that: the pointers it wrote into our own buffer at +0x18 stop
+ * leading to our cells. What gets drawn then is whatever that address now means — a cut-off
+ * Diablo II logo, in the one case seen — and then the game falls over. Two small reads before
+ * each draw turn that into a blink. */
+static int cell_ok(void *cells, int frame, int width, int height)
+{
+    DWORD entry = 0;
+    gfx_cell cell;
+
+    if (!cells || frame < 0) return 0;
+    if (!safe_read((const BYTE *)cells + 0x18 + 4 * frame, &entry, sizeof(entry))) return 0;
+    if (entry < 0x10000) return 0;
+    if (!safe_read((const void *)(UINT_PTR)entry, &cell, sizeof(cell))) return 0;
+    return (int)cell.width == width && (int)cell.height == height;
+}
 
 static int resolve(void)
 {
@@ -368,6 +390,7 @@ static int resolve(void)
         init_cell_fn init = (init_cell_fn)GetProcAddress(cmp, MAKEINTRESOURCEA(10006));
         log_line("beam: D2CMP #10006 at %p", (void *)init);
         if (!init) { draw_cell = NULL; return 0; }
+        cell_init = init;
         cells_beam = make_cells(init, art_beam, art_beam_size,
                                 art_beam_width, art_beam_height, "beam");
         cells_jet = make_cells(init, art_jet, art_jet_size,
@@ -382,7 +405,23 @@ static int resolve(void)
 #define CTX_FILE 13     /* +0x34, the cell file */
 #define CTX_DIR 16      /* +0x40, the direction — off the end of a 0x38-byte context */
 
-static void draw_sprite(void *cells, int frame, int x, int y)
+/* A fresh set, after the old one stopped being drawable. The old buffers are deliberately left
+   alone rather than freed: the game was given their addresses, and handing them back while it
+   might still hold one is a worse bug than a few hundred kilobytes. */
+static void rebuild_cells(void)
+{
+    if (!cell_init || rebuilds >= 16) return;
+    rebuilds++;
+    log_line("beam: the cell files stopped being drawable — building them again (%d)", rebuilds);
+    cells_beam = make_cells(cell_init, art_beam, art_beam_size,
+                            art_beam_width, art_beam_height, "beam");
+    cells_jet = make_cells(cell_init, art_jet, art_jet_size,
+                           art_jet_width, art_jet_height, "jet");
+    cells_slant = make_cells(cell_init, art_slant, art_slant_size,
+                             art_slant_width, art_slant_height, "slant");
+}
+
+static void draw_sprite(void *cells, int frame, int x, int y, int width, int height)
 {
     /* Generous and entirely zeroed: the fields D2Cmp checks are all happy at zero, and the ones
        nobody has named are better zero than whatever was on the stack. */
@@ -391,6 +430,7 @@ static void draw_sprite(void *cells, int frame, int x, int y)
     /* A coordinate the transform got wrong is the likeliest way to take the game down from here:
        a rectangle at an absurd place is simply clipped, a sprite is not. */
     if (x < -4096 || x > 8192 || y < -4096 || y > 8192) return;
+    if (!cell_ok(cells, frame, width, height)) { cells_stale = 1; return; }
     memset(context, 0, sizeof(context));
     context[CTX_CELL] = (DWORD)frame;
     context[CTX_FILE] = (DWORD)(UINT_PTR)cells;
@@ -531,11 +571,14 @@ static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_
 static void draw_foot_at(int x, int y, int tick)
 {
     if (cfg.art == 1 || cfg.art == 2)
-        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_foot, y);
+        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_foot, y,
+                    art_jet_width, art_jet_height);
     if (cfg.art == 0 || cfg.art == 2)
-        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_foot, y);
+        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_foot, y,
+                    art_beam_width, art_beam_height);
     if (cfg.art == 3)
-        draw_sprite(cells_slant, (tick / cfg.rate) % art_slant_frames, x - art_slant_foot, y);
+        draw_sprite(cells_slant, (tick / cfg.rate) % art_slant_frames, x - art_slant_foot, y,
+                    art_slant_width, art_slant_height);
 }
 
 /* Where the view's origin actually lives.
@@ -662,6 +705,7 @@ void beam_draw(void)
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     tick++;
+    if (cells_stale) { cells_stale = 0; rebuild_cells(); }
     if (tick == 1) capture_arm();
     if (tick == 120) trace_arm();
     trace_step();
