@@ -238,12 +238,14 @@ BOOL server_watch_install(void)
     int count = collect_ordinals(game, "D2Common.dll", wanted, MAX_HOOKS);
     if (!count) { log_line("server: D2Game imports no D2Common ordinals"); return FALSE; }
 
-    game_thunks = (BYTE *)VirtualAlloc(NULL, count * 16, MEM_COMMIT | MEM_RESERVE,
+    /* 32 bytes each, not 16: write_thunk emits twenty-two and the first version let them
+       overlap, which turned the thunks into rubbish and crashed the game on entering it. */
+    game_thunks = (BYTE *)VirtualAlloc(NULL, count * 32, MEM_COMMIT | MEM_RESERVE,
                                        PAGE_EXECUTE_READWRITE);
     if (!game_thunks) { log_line("server: could not allocate thunks"); return FALSE; }
 
     for (int i = 0; i < count; i++) {
-        BYTE *thunk = game_thunks + i * 16;
+        BYTE *thunk = game_thunks + i * 32;
         /* Counting only — no call back into us. 716 of these run on the server thread and the
            point is to disturb nothing. */
         write_thunk(thunk, i, &game_counts[i], &game_originals[i]);
