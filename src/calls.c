@@ -228,6 +228,43 @@ static void **game_slots[MAX_HOOKS];
 static int game_hooks;
 static BYTE *game_thunks;
 
+/* The client's own network layer. In single player the server still talks to the client through
+   D2Net, and an object appears on the client because a packet told it to — the client then does
+   all of it: allocates the unit, puts it in the room, starts the animation. If we can find that
+   packet we can send one ourselves, and never draw a pixel or touch a server internal.
+   Twelve imports; the same subtraction narrows them to the one that matters. */
+static void *net_originals[16];
+static volatile LONG net_counts[16];
+static LONG net_baseline[16];
+static WORD net_ordinals[16];
+static int net_hooks;
+static BYTE *net_thunks;
+
+static BOOL net_watch_install(void)
+{
+    if (net_hooks) return TRUE;
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return FALSE;
+    WORD wanted[16];
+    int count = collect_ordinals(client, "D2Net.dll", wanted, 16);
+    if (!count) return FALSE;
+    net_thunks = (BYTE *)VirtualAlloc(NULL, count * 32, MEM_COMMIT | MEM_RESERVE,
+                                      PAGE_EXECUTE_READWRITE);
+    if (!net_thunks) return FALSE;
+    for (int i = 0; i < count; i++) {
+        BYTE *thunk = net_thunks + i * 32;
+        write_thunk(thunk, i, &net_counts[i], &net_originals[i]);
+        void *previous = NULL;
+        void **slot = redirect_ordinal(client, "D2Net.dll", wanted[i], thunk, &previous);
+        if (!slot) continue;
+        net_originals[i] = previous;
+        net_ordinals[i] = wanted[i];
+        net_hooks++;
+    }
+    log_line("net: watching %d of D2Client's %d calls into D2Net", net_hooks, count);
+    return net_hooks > 0;
+}
+
 BOOL server_watch_install(void)
 {
     if (game_hooks) return TRUE;
@@ -270,6 +307,7 @@ void server_on_new_object(int objects_now)
 {
     static int objects_before = -1;
     if (!game_hooks && !server_watch_install()) return;
+    net_watch_install();
 
     if (objects_before >= 0 && objects_now > objects_before) {
         log_line("server: an object appeared (%d -> %d). During that frame, D2Game called —",
@@ -278,10 +316,15 @@ void server_on_new_object(int objects_now)
             LONG moved = game_counts[i] - game_baseline[i];
             if (moved > 0) log_line("    D2Common #%u  x%ld", game_ordinals[i], moved);
         }
+        for (int i = 0; i < net_hooks; i++) {
+            LONG moved = net_counts[i] - net_baseline[i];
+            if (moved > 0) log_line("    D2Net #%u  x%ld", net_ordinals[i], moved);
+        }
         log_line("server: that is the whole list for that frame");
     }
     objects_before = objects_now;
     for (int i = 0; i < game_hooks; i++) game_baseline[i] = game_counts[i];
+    for (int i = 0; i < net_hooks; i++) net_baseline[i] = net_counts[i];
 }
 
 void server_baseline(void)
