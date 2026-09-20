@@ -139,6 +139,8 @@ static DWORD frames;
 static DWORD last_report;
 
 void frame_tick(void);   /* what we actually want to do each frame; see probe.c */
+void calls_report(DWORD frames);
+BOOL calls_watch_install(void);
 
 static void __stdcall our_swap(int interval)
 {
@@ -148,13 +150,11 @@ static void __stdcall our_swap(int interval)
         log_line("frame: %lu frames drawn (about %lu per second)",
                  (unsigned long)frames,
                  (unsigned long)(frames * 1000 / (now - last_report ? now - last_report : 1)));
+        calls_report(frames);
         frames = 0;
         last_report = now;
     }
     frame_tick();
-    resolve_glide();
-    draw_test_line();
-    draw_test_pixels();
     if (original_swap) original_swap(interval);
 }
 
@@ -260,6 +260,7 @@ BOOL frame_hook_install(void)
         if (layout_slot) { original_layout = (gr_vertex_layout_fn)was; break; }
     }
     log_line("frame: vertex layout %s", layout_slot ? "being listened to" : "not imported by name");
+    calls_watch_install();
     return TRUE;
 }
 
