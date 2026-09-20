@@ -35,7 +35,10 @@ static int target_count;
    in the config we loaded it from. */
 static const BYTE *self_start, *self_end;
 
-static BOOL can_read(const BYTE *at, SIZE_T count);
+#define CHUNK 0x10000
+static BYTE chunk[CHUNK];
+
+static BOOL safe_read(const void *at, void *into, SIZE_T count);
 
 
 /* Every UnitAny this pass managed to identify. Enumerating items one per frame means walking the
@@ -106,12 +109,13 @@ static void dump_range(const BYTE *at, const BYTE *origin, int count)
 {
     for (int row = 0; row < count / 16; row++) {
         const BYTE *line = at + row * 16;
-        if (!can_read(line, 16)) continue;
+        BYTE bytes[16];
+        if (!safe_read(line, bytes, sizeof(bytes))) continue;
         DWORD w[4];
-        memcpy(w, line, sizeof(w));
+        memcpy(w, bytes, sizeof(w));
         char ascii[17] = {0};
         for (int i = 0; i < 16; i++) {
-            BYTE ch = line[i];
+            BYTE ch = bytes[i];
             ascii[i] = (ch >= 32 && ch < 127) ? (char)ch : '.';
         }
         log_line("    %+05d  %08X %08X %08X %08X  |%s|",
@@ -136,18 +140,19 @@ static void follow_item_data(const BYTE *hit)
 {
     const BYTE *unit = hit - GUID_TO_UNIT;
     const BYTE *slot = unit + UNIT_TO_ITEMDATA;
-    if (!can_read(slot, 4)) return;
-    const BYTE *item_data = (const BYTE *)(*(const DWORD *)slot);
-    /* A plausible heap pointer, not a small integer that happens to sit there. */
-    if (!can_read(item_data, 0x40)) {
+    DWORD pointer = 0;
+    if (!safe_read(slot, &pointer, 4)) return;
+    const BYTE *item_data = (const BYTE *)(UINT_PTR)pointer;
+    BYTE head[0x40];
+    if (!safe_read(item_data, head, sizeof(head))) {
         log_line("    -> pItemData %p is not readable", (void *)item_data);
         return;
     }
     log_line("    -> pItemData %p (offsets below are from ITS start)", (void *)item_data);
     dump_range(item_data, item_data, 0xB0);
     /* dwType 4 is an item and quality is 1..9; anything else reached this far by coincidence. */
-    DWORD type = *(const DWORD *)unit;
-    DWORD quality = *(const DWORD *)item_data;
+    DWORD type = 0, quality = 0;
+    if (!safe_read(unit, &type, 4) || !safe_read(item_data, &quality, 4)) return;
     if (type == 4 && quality >= 1 && quality <= 9) remember_unit(unit);
     else log_line("    (not an item unit: dwType=%lu quality=%lu — not traced)",
                   (unsigned long)type, (unsigned long)quality);
@@ -184,18 +189,25 @@ static void scan_for(const probe_target *target)
 
         if (mbi.State == MEM_COMMIT && readable(mbi.Protect)) {
             const BYTE *base = (const BYTE *)mbi.BaseAddress;
-            SIZE_T size = mbi.RegionSize;
-            /* Aligned scan: every structure field we care about is dword-aligned, and it is four
-               times less work than a byte-wise sweep of a 2GB address space. */
-            for (SIZE_T offset = 0; offset + 4 <= size; offset += 4) {
-                const BYTE *at = base + offset;
-                if (*(const DWORD *)at != target->value) continue;
-                if (at >= self_start && at < self_end) continue;   /* our own config strings */
-                dump_around(at, target);
-                if (++hits >= MAX_HITS_PER_TARGET) {
-                    log_line("  (stopping at %d hits)", hits);
-                    break;
+            /* Copied out a chunk at a time rather than read in place: the game is running while
+               we look, and a region can be freed between the query and the read. */
+            for (SIZE_T done = 0; done < mbi.RegionSize; done += CHUNK) {
+                SIZE_T count = mbi.RegionSize - done;
+                if (count > CHUNK) count = CHUNK;
+                if (!safe_read(base + done, chunk, count)) continue;
+                /* Aligned scan: every field we care about is dword-aligned, and it is four times
+                   less work than a byte-wise sweep of a 2GB address space. */
+                for (SIZE_T offset = 0; offset + 4 <= count; offset += 4) {
+                    if (*(const DWORD *)(chunk + offset) != target->value) continue;
+                    const BYTE *at = base + done + offset;
+                    if (at >= self_start && at < self_end) continue;   /* our own config strings */
+                    dump_around(at, target);
+                    if (++hits >= MAX_HITS_PER_TARGET) {
+                        log_line("  (stopping at %d hits)", hits);
+                        break;
+                    }
                 }
+                if (hits >= MAX_HITS_PER_TARGET) break;
             }
         }
         if (next <= address) break;
@@ -228,10 +240,14 @@ static void scan_for_referrers(void)
 
         if (mbi.State == MEM_COMMIT && readable(mbi.Protect)) {
             const BYTE *base = (const BYTE *)mbi.BaseAddress;
-            for (SIZE_T offset = 0; offset + 4 <= mbi.RegionSize; offset += 4) {
-                const BYTE *at = base + offset;
+            for (SIZE_T done = 0; done < mbi.RegionSize && shown < 64; done += CHUNK) {
+              SIZE_T count = mbi.RegionSize - done;
+              if (count > CHUNK) count = CHUNK;
+              if (!safe_read(base + done, chunk, count)) continue;
+              for (SIZE_T offset = 0; offset + 4 <= count; offset += 4) {
+                const BYTE *at = base + done + offset;
                 if (at >= self_start && at < self_end) continue;
-                DWORD value = *(const DWORD *)at;
+                DWORD value = *(const DWORD *)(chunk + offset);
                 for (int i = 0; i < found_unit_count; i++) {
                     if (value != (DWORD)(UINT_PTR)found_units[i]) continue;
                     char where[128];
@@ -245,6 +261,7 @@ static void scan_for_referrers(void)
                     break;
                 }
                 if (shown >= 64) break;
+              }
             }
         }
         if (next <= address) break;
@@ -254,42 +271,40 @@ static void scan_for_referrers(void)
     log_line("");
 }
 
-/* IsBadReadPtr lies often enough to crash a process that trusts it — it was the first version of
-   this sweep, and it faulted mid-pass on the real game. VirtualQuery asks the kernel instead, and
-   one cached region answers for every address inside it, which is what keeps the cost bearable
-   when a sweep tests millions of candidates. */
-static MEMORY_BASIC_INFORMATION cached;
-static BOOL cache_valid;
+/* Two attempts at reading another thread's memory safely have now faulted in the live game.
+   IsBadReadPtr is documented to be unreliable, and asking VirtualQuery first is no better here:
+   the game is running while we look, so a region that answers "committed" can be freed before
+   the very next instruction reads it, and a guard page faults whatever the query said.
 
-static BOOL can_read(const BYTE *at, SIZE_T count)
+   ReadProcessMemory on our own process is the way out. It does the read in the kernel and
+   returns FALSE on anything it cannot touch, so a bad pointer costs a failed call instead of
+   taking the game down with it. */
+static BOOL safe_read(const void *at, void *into, SIZE_T count)
 {
     if ((DWORD)(UINT_PTR)at < 0x10000) return FALSE;
-    if (!(cache_valid && at >= (const BYTE *)cached.BaseAddress &&
-          at + count <= (const BYTE *)cached.BaseAddress + cached.RegionSize)) {
-        if (!VirtualQuery(at, &cached, sizeof(cached))) { cache_valid = FALSE; return FALSE; }
-        cache_valid = TRUE;
-    }
-    if (cached.State != MEM_COMMIT || !readable(cached.Protect)) return FALSE;
-    return at + count <= (const BYTE *)cached.BaseAddress + cached.RegionSize;
+    SIZE_T got = 0;
+    return ReadProcessMemory(GetCurrentProcess(), at, into, count, &got) && got == count;
 }
 
 /* Does this address hold something shaped like a UnitAny? dwType is 0..5 in this engine (player,
    monster, object, missile, item, tile), and every unit has a readable data pointer at +0x14.
    Two cheap tests, enough to tell a real unit from a number that happens to look like a pointer. */
-static BOOL looks_like_unit(const BYTE *candidate)
+static BOOL looks_like_unit(const BYTE *candidate, DWORD *out_type, DWORD *out_txtfile)
 {
-    if (!can_read(candidate, 0x40)) return FALSE;
-    DWORD type = *(const DWORD *)candidate;
-    if (type > 5) return FALSE;
+    DWORD head[6];
+    if (!safe_read(candidate, head, sizeof(head))) return FALSE;
+    if (head[0] > 5) return FALSE;
     /* A base-item/monster/object row number, not an address or a flag word. */
-    DWORD txtfile = *(const DWORD *)(candidate + 4);
-    if (txtfile > 8192) return FALSE;
-    const BYTE *data = (const BYTE *)(UINT_PTR)(*(const DWORD *)(candidate + UNIT_TO_ITEMDATA));
-    if (!can_read(data, 8)) return FALSE;
+    if (head[1] > 8192) return FALSE;
+    DWORD first = 0;
+    if (!safe_read((const void *)(UINT_PTR)head[UNIT_TO_ITEMDATA / 4], &first, 4)) return FALSE;
     /* Whatever that points at starts with something small — a quality, a class, a flag set. It
        is emphatically not another pointer, which is what every false positive in the code
        section turned out to hold. */
-    return *(const DWORD *)data < 0x1000;
+    if (first >= 0x1000) return FALSE;
+    *out_type = head[0];
+    *out_txtfile = head[1];
+    return TRUE;
 }
 
 /* The game reaches its units through a static hash table — an array of list heads living in
@@ -324,13 +339,13 @@ static void scan_client_image_for_unit_slots(void)
         {
             for (SIZE_T offset = 0; offset + 4 <= size; offset += 4) {
                 const BYTE *slot = from + offset;
-                if (!can_read(slot, 4)) continue;
-                const BYTE *value = (const BYTE *)(UINT_PTR)(*(const DWORD *)slot);
-                if (!looks_like_unit(value)) continue;
-                log_line("    +0x%06X -> %p  dwType=%lu txtfile=%lu",
-                         (unsigned)(slot - base), (void *)value,
-                         (unsigned long)*(const DWORD *)value,
-                         (unsigned long)*(const DWORD *)(value + 4));
+                DWORD value = 0;
+                if (!safe_read(slot, &value, 4)) continue;
+                DWORD type = 0, txtfile = 0;
+                if (!looks_like_unit((const BYTE *)(UINT_PTR)value, &type, &txtfile)) continue;
+                log_line("    +0x%06X -> %08X  dwType=%lu txtfile=%lu",
+                         (unsigned)(slot - base), value,
+                         (unsigned long)type, (unsigned long)txtfile);
                 if (++found >= 200) { log_line("  (stopping at %d)", found); break; }
             }
         }
