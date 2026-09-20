@@ -140,6 +140,7 @@ static DWORD last_report;
 
 void frame_tick(void);   /* what we actually want to do each frame; see probe.c */
 void calls_report(DWORD frames);
+void calls_draw_test_box(void);
 BOOL calls_watch_install(void);
 
 static void __stdcall our_swap(int interval)
@@ -155,6 +156,7 @@ static void __stdcall our_swap(int interval)
         last_report = now;
     }
     frame_tick();
+    calls_draw_test_box();
     if (original_swap) original_swap(interval);
 }
 
