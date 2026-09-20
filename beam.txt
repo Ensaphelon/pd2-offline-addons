@@ -16,3 +16,4 @@ trace   0         # print the shape of one frame to the log
 drawon  10054     # after the world, before the name plates and the cursor; 0 means last
 mark    0         # 1 a cross where the item is reckoned to be, 2 one at the player too
 falling 0         # 1 lights it while it is still bouncing, 0 only once it has settled
+wanted  1         # obey grail-wanted.txt; 0 lights every unique and set there is

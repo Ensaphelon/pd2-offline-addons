@@ -214,10 +214,23 @@ That covers dropping it yourself, because an item cannot leave a character witho
 by them first; it covers picking it up, because picking it up puts it in one of those modes; and
 it leaves a monster's drop alone, which is born on the ground.
 
-What it does NOT yet know is whether the item would actually complete the grail. The client's copy
-of a ground item carries no unique or set id — that is on the server-side unit — so the most the
-plugin can read is `dwTxtFileNo`, the base. Filtering to bases that can still yield something
-missing needs a list written out by pd2-holy-inventory, and that list does not exist yet.
+## Which bases are worth a light
+
+The client's copy of a ground item carries no unique or set id — that lives on the server-side
+unit — so the most the plugin can read is `dwTxtFileNo`, the base. The most it can therefore be
+TOLD is which bases can still produce something the collection lacks: a Shako lights up while any
+unique made on a Shako is missing, and stops when none is. The exact answer still arrives later,
+when the item is identified.
+
+pd2-holy-inventory writes that list into `grail-wanted.txt` beside this DLL after every scan, one
+`type <number>` per line, and the plugin re-reads it while the game runs. No file at all means
+every unique and set is lit, which is what this did before the list existed; `wanted 0` says the
+same on purpose.
+
+The number is measured, not assumed. The game numbers bases by walking `Weapons.txt`, then
+`Armor.txt`, then `Misc.txt`, skipping each table's uncoded `Expansion` separator row: a Sharkskin
+Belt in the running game reported 404, and that arithmetic puts `zvb` at 404 exactly, where
+counting the separators puts it at 405.
 
 ## Perspective
 

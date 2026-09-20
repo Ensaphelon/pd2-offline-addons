@@ -99,13 +99,14 @@ static struct {
     int mark;     /* a dot at the exact point the transform works out, to see it against the
                      item's own sprite */
     int falling;  /* light it while it is still bouncing, not only once it has settled */
+    int wanted;   /* obey grail-wanted.txt; 0 lights every unique and set there is */
     int on;
 } cfg = {
     /* Named rather than counted: this list has gained a field four times, and a positional
        initialiser silently shifts every value after the new one. */
     .art = 0, .trans = 3, .bright = -1, .ordinal = 10019, .colour = 0, .rate = 4,
     .dx = 0, .dy = 0, .anchor = 0, .test = 0, .capture = 0, .trace = 0,
-    .drawon = 10054, .mark = 0, .falling = 0, .on = 1,
+    .drawon = 10054, .mark = 0, .falling = 0, .wanted = 1, .on = 1,
 };
 
 static void capture_arm(void);
@@ -115,11 +116,71 @@ static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_
 static char config_path[MAX_PATH];
 static FILETIME config_stamp;
 
+/* Which bases are still worth a light.
+ *
+ * The plugin cannot tell whether a ground item finishes the Holy Grail: the client's copy of it
+ * carries no unique or set id — that is on the server-side unit — so all it can read is
+ * dwTxtFileNo, the base. pd2-holy-inventory writes the bases that can still produce something
+ * missing into grail-wanted.txt beside this DLL, one `type <number>` per line, and rewrites it
+ * after every scan. With no file at all, everything unique or set is lit, which is what this did
+ * before the list existed. */
+#define WANTED_MAX 8192
+
+static BYTE wanted[WANTED_MAX / 8];
+static int wanted_count;
+static char wanted_path[MAX_PATH];
+static FILETIME wanted_stamp;
+
+static int wanted_has(DWORD type_no)
+{
+    if (!wanted_count) return 1;              /* no list: everything is a candidate */
+    if (type_no >= WANTED_MAX) return 1;      /* beyond anything the app can name: do not hide it */
+    return (wanted[type_no >> 3] >> (type_no & 7)) & 1;
+}
+
+static void wanted_reload(void)
+{
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    FILE *f;
+    char line[256];
+    int number, found = 0;
+
+    if (!wanted_path[0]) return;
+    if (!GetFileAttributesExA(wanted_path, GetFileExInfoStandard, &info)) {
+        if (wanted_count) {
+            memset(wanted, 0, sizeof(wanted));
+            wanted_count = 0;
+            log_line("grail: grail-wanted.txt is gone — lighting every unique and set again");
+        }
+        return;
+    }
+    if (CompareFileTime(&info.ftLastWriteTime, &wanted_stamp) == 0) return;
+    wanted_stamp = info.ftLastWriteTime;
+
+    f = fopen(wanted_path, "r");
+    if (!f) return;
+    memset(wanted, 0, sizeof(wanted));
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "type %i", &number) != 1) continue;
+        if (number < 0 || number >= WANTED_MAX) continue;
+        wanted[number >> 3] |= (BYTE)(1 << (number & 7));
+        found++;
+    }
+    fclose(f);
+    wanted_count = found;
+    log_line("grail: %d base(s) can still finish the grail, read from grail-wanted.txt", found);
+}
+
 void beam_init(void *module)
 {
     if (!GetModuleFileNameA((HMODULE)module, config_path, MAX_PATH)) return;
     char *slash = strrchr(config_path, '\\');
     if (slash) strcpy(slash + 1, "beam.txt");
+
+    if (GetModuleFileNameA((HMODULE)module, wanted_path, MAX_PATH)) {
+        slash = strrchr(wanted_path, '\\');
+        if (slash) strcpy(slash + 1, "grail-wanted.txt");
+    }
 }
 
 void beam_reload(void)
@@ -160,13 +221,16 @@ void beam_reload(void)
         if (sscanf(line, "drawon %i", &value) == 1) { cfg.drawon = value; continue; }
         if (sscanf(line, "mark %i", &value) == 1) { cfg.mark = value; continue; }
         if (sscanf(line, "falling %i", &value) == 1) { cfg.falling = value; continue; }
+        if (sscanf(line, "wanted %i", &value) == 1) { cfg.wanted = value; continue; }
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
+    wanted_reload();
     log_line("beam: art=%d draw=#%d drawon=#%d trans=%d bright=%d colour=%d rate=%d dx=%d dy=%d "
-             "anchor=%d test=%d mark=%d capture=%d trace=%d on=%d", cfg.art, cfg.ordinal,
-             cfg.drawon, cfg.trans, cfg.bright, cfg.colour, cfg.rate, cfg.dx, cfg.dy, cfg.anchor,
-             cfg.test, cfg.mark, cfg.capture, cfg.trace, cfg.on);
+             "anchor=%d test=%d mark=%d capture=%d trace=%d falling=%d wanted=%d on=%d",
+             cfg.art, cfg.ordinal, cfg.drawon, cfg.trans, cfg.bright, cfg.colour, cfg.rate,
+             cfg.dx, cfg.dy, cfg.anchor, cfg.test, cfg.mark, cfg.capture, cfg.trace,
+             cfg.falling, cfg.wanted, cfg.on);
 }
 
 /* One CellFile per sprite, built the first time it is wanted. The buffer has to stay: InitCellFile
@@ -755,7 +819,7 @@ static int held_has(DWORD id)
 
 /* Said once per item, so a session's log reads as a list of what was decided and why rather than
    the same line sixty times a second. */
-static void say_once(DWORD id, DWORD type_no, DWORD quality, int lit)
+static void say_once(DWORD id, DWORD type_no, DWORD quality, const char *why)
 {
     static DWORD said[256];
     static int said_at, said_count;
@@ -763,9 +827,8 @@ static void say_once(DWORD id, DWORD type_no, DWORD quality, int lit)
     said[said_at] = id;
     said_at = (said_at + 1) & 255;
     if (said_count < 256) said_count++;
-    log_line("grail: %s id %lu, type %lu, quality %lu — %s",
-             quality == 7 ? "unique" : "set", (unsigned long)id, (unsigned long)type_no,
-             (unsigned long)quality, lit ? "lit" : "the player has held this one");
+    log_line("grail: %s id %lu on base %lu — %s", quality == 7 ? "unique" : "set",
+             (unsigned long)id, (unsigned long)type_no, why ? why : "lit");
 }
 
 /* Every item lying on the ground, out of the client's own unit table: six rows of 128 buckets,
@@ -845,9 +908,11 @@ void beam_draw(void)
             } else if (item_data && (!falling || cfg.falling)) {
                 DWORD quality = *(const DWORD *)(UINT_PTR)item_data;
                 if (quality == 5 || quality == 7) {   /* set, unique */
-                    int lit = !held_has(id);
-                    say_once(id, type_no, quality, lit);
-                    if (lit)
+                    const char *why = NULL;
+                    if (held_has(id)) why = "the player has held this one";
+                    else if (cfg.wanted && !wanted_has(type_no)) why = "nothing missing on this base";
+                    say_once(id, type_no, quality, why);
+                    if (!why)
                         draw_over(base, unit, get_x((void *)unit), get_y((void *)unit), tick);
                 }
             }
