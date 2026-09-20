@@ -185,5 +185,17 @@ maps it: the world runs to call 12325, `#10054` is called exactly once at 12326,
 after it is interface — the plate's own rectangle at 12361, the cursor, and `#10040` last of all.
 So `#10054` is the seam, and `drawon` sits on it.
 
+## Perspective
+
+PD2's video options have a perspective mode, and with it on the world is drawn with a real
+three-dimensional projection instead of flat isometry. A point's place on screen then stops being
+a straight sum of its distance from the player and drifts further the further out it is — which
+is precisely the drift chased here for several rounds, and no choice of multipliers fixes it,
+because the transform above is flat by nature. Every overlay of this kind has the same limitation.
+
+Nobody publishes where the flag lives. D2Gfx exports nine functions that do nothing but return a
+variable, and the plugin logs all nine whenever any of them moves, which is what toggling the
+setting does.
+
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.

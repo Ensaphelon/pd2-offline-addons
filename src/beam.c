@@ -395,6 +395,57 @@ static void draw_sprite(void *cells, int frame, int x, int y)
     draw_cell(context, x, y, cfg.bright, cfg.trans, cfg.colour);
 }
 
+/* Perspective.
+ *
+ * PD2's video options have one, and with it on the world is drawn with a real three-dimensional
+ * projection rather than flat isometry — so a point's place on screen stops being a straight sum
+ * of its distance from the player, and drifts further the further out it is. That is exactly the
+ * drift seen here, and no choice of multipliers fixes it: the transform is flat by nature. Every
+ * overlay of this kind has the same limitation.
+ *
+ * Nobody publishes where the flag lives, but D2Gfx exports nine functions that do nothing but
+ * return a variable, and one of those is it. All nine get logged whenever any of them moves,
+ * which is what toggling the setting does. */
+static const int flag_ordinals[] = {10004, 10008, 10030, 10031, 10036, 10047, 10048, 10065, 10078};
+#define FLAG_COUNT ((int)(sizeof(flag_ordinals) / sizeof(flag_ordinals[0])))
+
+typedef int(__cdecl *flag_fn)(void);
+
+static void report_flags(void)
+{
+    static flag_fn flags[FLAG_COUNT];
+    static int last[FLAG_COUNT];
+    static int lines, ready;
+    char line[220];
+    int now[FLAG_COUNT], used = 0, same = ready;
+
+    if (lines > 12) return;
+    if (!ready) {
+        HMODULE gfx = GetModuleHandleA("D2gfx.dll");
+        if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
+        if (!gfx) return;
+        for (int i = 0; i < FLAG_COUNT; i++)
+            flags[i] = (flag_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(flag_ordinals[i]));
+        ready = 1;
+    }
+    for (int i = 0; i < FLAG_COUNT; i++) {
+        now[i] = flags[i] ? flags[i]() : -1;
+        if (now[i] != last[i]) same = 0;
+    }
+    if (same) return;
+    for (int i = 0; i < FLAG_COUNT; i++) last[i] = now[i];
+    lines++;
+
+    for (int i = 0; i < FLAG_COUNT; i++) {
+        int wrote = snprintf(line + used, sizeof(line) - used, "%s#%d=%d",
+                             used ? " " : "", flag_ordinals[i], now[i]);
+        if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) break;
+        used += wrote;
+    }
+    line[used] = 0;
+    log_line("flags: %s", line);
+}
+
 /* Where the player really is, to the fraction of a subtile.
  *
  * `GetUnitX` truncates, and everything built on it inherits 16-pixel stairs. The path a player
@@ -576,9 +627,11 @@ static void report_item(const BYTE *base, const void *unit, int ix, int iy, int 
     hx = (int)*(const DWORD *)(base + OFF_HOVERX);
     hy = (int)*(const DWORD *)(base + OFF_HOVERY);
 
-    log_line("hover: item %d,%d  player %d.%05d,%d.%05d  ours %d,%d  mouse %d,%d  hover %d,%d",
-             ix, iy, px16 >> 16, (px16 & 0xFFFF) * 100000 / 65536,
-             py16 >> 16, (py16 & 0xFFFF) * 100000 / 65536, isx, isy, mx, my, hx, hy);
+    /* The fraction is printed in hundredths: a hundred thousand times a sixteen-bit number
+       overflows a thirty-two bit one, which is why an earlier line read "4029.-15536". */
+    log_line("hover: item %d,%d  player %d.%02d,%d.%02d  ours %d,%d  mouse %d,%d  hover %d,%d",
+             ix, iy, px16 >> 16, ((px16 & 0xFFFF) * 100) >> 16,
+             py16 >> 16, ((py16 & 0xFFFF) * 100) >> 16, isx, isy, mx, my, hx, hy);
 }
 
 static void draw_over(const BYTE *base, const void *unit, int world_x, int world_y, int tick)
@@ -608,6 +661,7 @@ void beam_draw(void)
     if (tick == 120) trace_arm();
     trace_step();
     report_transform((const BYTE *)client);
+    report_flags();
     if (capture_left > 0 && !--capture_left) log_line("capture: done looking");
 
     /* Once, at a fixed spot near the left edge, before any item is involved: if the game is
