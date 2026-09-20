@@ -48,3 +48,30 @@ pd2_holy_grail/        the installer — one import-table entry, reversible from
 
 Sibling project: [pd2-quick-restart](https://github.com/Ensaphelon/pd2-quick-restart), whose
 injection and logging this reuses.
+
+## Decisions made while probing
+
+**The item-appears-on-the-ground sound is 4686**, `act1\bloodravenresolution.wav` — one of the
+game's fifteen quest stings. It sits in sound group 10 with the quest effects, so it obeys that
+slider rather than LOOT FILTER; shipping our own copy into the archive with a group-12 row is the
+alternative, and is not worth doing until somebody minds.
+
+**The play call is** `play(unit, soundId, volume, priority, flags)`, exported by
+`ProjectDiablo.dll` as `_D2Client_PlaySoundWithCustomVolumeOrPriority@20`. Volume is the third
+argument and zero is silence. `unit` is dereferenced when non-zero — pass 0 unless you have a
+real one, or the game goes down.
+
+**What the running game knows**, all measured rather than assumed:
+
+| | |
+|---|---|
+| items reachable each frame | `D2Client.dll+0x10AE08`, the item row of the unit table |
+| the player | `D2Client.dll+0x10A60C` |
+| an item is on the ground | `UnitAny+0x10` (dwMode) is 3 |
+| its quality | `ItemData+0x00` — 5 set, 7 unique |
+| its identity | `ItemData+0x28`, in the same numbering pd2-holy-inventory's catalog uses |
+
+The identity is present on the ground even before the item is identified — but only on the
+server-side unit, which exists in the same process in single player. The client's own copy of a
+ground item carries a zero there, which is why community loot filters hard-code 107 item names
+instead of reading one.
