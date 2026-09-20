@@ -149,6 +149,18 @@ python tools-beam/build_dc6.py src/art.c
 `tools-beam/preview.py` and `roundtrip.py` render both the decode and the re-encode to PNG, which
 is how the format was checked before the game ever saw it.
 
+**There is no slanted shaft in the game.** All 326 rows of `Overlay.txt` were decoded looking for
+one: `HoradricLightBeam` is the only thing that stands as a column, `LIGHTJET` is the only fan,
+and the slanted light in D2's own dungeons is painted into the floor tiles rather than animated,
+so it cannot be lifted out and put over an item. `HolyShockHit` — Hand of God — does fall from
+the sky at an angle, but it strikes once and bursts, which suits a moment rather than a standing
+light.
+
+So `art slant` is made rather than found: the game's own beam, widened threefold and sheared half
+a pixel per pixel of height, about 27 degrees. Its art, colours and twenty-one frames are still
+the game's; only the geometry is ours. A leaning sprite no longer stands on its own middle, so
+each one carries a `_foot`.
+
 `#10019 DrawCellContextEx` was the first guess and took the game down on the first drop. Both
 calls are six `__stdcall` arguments — confirmed by the `ret 0x18` at the end of each, which is
 how the ordinals were checked rather than trusted — but #10041 is the one with working code

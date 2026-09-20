@@ -78,7 +78,7 @@ typedef void *(__stdcall *get_selected_fn)(void);
 /* Everything the look depends on lives in beam.txt beside the DLL and is re-read while the game
    runs, so trying another blend or nudging the sprite is a text edit and not a rebuild. */
 static struct {
-    int art;      /* 0 beam, 1 jet, 2 both */
+    int art;      /* 0 beam, 1 jet, 2 both, 3 the leaning sunbeam */
     int trans;    /* the blend. All eight were drawn side by side over grass: 0 is nearly
                      invisible, 3 glows and lets the ground through, 5 is the flat opaque one
                      the game uses for its own panels, and the rest are slabs. Light wants 3. */
@@ -132,7 +132,8 @@ void beam_reload(void)
         int value;
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
         if (sscanf(line, "art %31s", word) == 1) {
-            cfg.art = !_stricmp(word, "jet") ? 1 : !_stricmp(word, "both") ? 2 : 0;
+            cfg.art = !_stricmp(word, "jet") ? 1 : !_stricmp(word, "both") ? 2
+                    : !_stricmp(word, "slant") ? 3 : 0;
             continue;
         }
         if (sscanf(line, "anchor %31s", word) == 1) {
@@ -345,7 +346,7 @@ static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned i
 }
 
 static draw_cell_fn draw_cell;
-static void *cells_beam, *cells_jet;
+static void *cells_beam, *cells_jet, *cells_slant;
 
 static int resolve(void)
 {
@@ -371,8 +372,10 @@ static int resolve(void)
                                 art_beam_width, art_beam_height, "beam");
         cells_jet = make_cells(init, art_jet, art_jet_size,
                                art_jet_width, art_jet_height, "jet");
+        cells_slant = make_cells(init, art_slant, art_slant_size,
+                                 art_slant_width, art_slant_height, "slant");
     }
-    return cells_beam != NULL || cells_jet != NULL;
+    return cells_beam != NULL || cells_jet != NULL || cells_slant != NULL;
 }
 
 #define CTX_CELL 0      /* the frame to draw */
@@ -528,9 +531,11 @@ static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_
 static void draw_foot_at(int x, int y, int tick)
 {
     if (cfg.art == 1 || cfg.art == 2)
-        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_width / 2, y);
+        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_foot, y);
     if (cfg.art == 0 || cfg.art == 2)
-        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_width / 2, y);
+        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_foot, y);
+    if (cfg.art == 3)
+        draw_sprite(cells_slant, (tick / cfg.rate) % art_slant_frames, x - art_slant_foot, y);
 }
 
 /* Where the view's origin actually lives.

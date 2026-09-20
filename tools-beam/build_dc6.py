@@ -64,9 +64,53 @@ def build(frames, width, height) -> bytes:
     return bytes(out)
 
 
-def emit(name, symbol, out_path):
+class _Frame:
+    __slots__ = ("pixels",)
+
+
+def widen(frames, width, height, factor):
+    """Nearest-neighbour, horizontally. A shaft of sunlight is a band, not a filament, and the
+    game's beam is twenty pixels across because it stands upright."""
+    out, new_width = [], width * factor
+    for f in frames:
+        pixels = bytearray(new_width * height)
+        for y in range(height):
+            for x in range(new_width):
+                pixels[y * new_width + x] = f.pixels[y * width + x // factor]
+        g = _Frame()
+        g.pixels = pixels
+        out.append(g)
+    return out, new_width, height
+
+
+def lean(frames, width, height, slope):
+    """Push each row sideways in proportion to its height above the ground.
+
+    The game has no slanted shaft as a sprite — the ones in its dungeons are painted into the
+    floor tiles — but the DC6 is ours to build, so its own upright beam can be leant over. The
+    art, its colours and its twenty-one frames stay the game's; only the geometry changes."""
+    push = int(abs(slope) * height) + 1
+    out, new_width = [], width + push
+    for f in frames:
+        pixels = bytearray(new_width * height)
+        for y in range(height):
+            shift = int(round((height - 1 - y) * slope)) + (push if slope < 0 else 0)
+            for x in range(width):
+                value = f.pixels[y * width + x]
+                if value and 0 <= x + shift < new_width:
+                    pixels[y * new_width + x + shift] = value
+        g = _Frame()
+        g.pixels = pixels
+        out.append(g)
+    return out, new_width, height
+
+
+def emit(name, symbol, out_path, transform=None):
     raw = raw_from_mpq("d2data.mpq", f"data\\global\\overlays\\{name}.dcc")
     frames, width, height, box = decode(raw)[0]
+    foot = width // 2
+    if transform:
+        frames, width, height, foot = transform(frames, width, height)
     blob = build(frames, width, height)
     with open(out_path, "a") as fh:
         fh.write(f"\n/* {name}.dcc: {len(frames)} frames, {width}x{height}, "
@@ -74,6 +118,7 @@ def emit(name, symbol, out_path):
         fh.write(f"const int {symbol}_frames = {len(frames)};\n")
         fh.write(f"const int {symbol}_width = {width};\n")
         fh.write(f"const int {symbol}_height = {height};\n")
+        fh.write(f"const int {symbol}_foot = {foot};\n")
         fh.write(f"const unsigned int {symbol}_size = {len(blob)};\n")
         fh.write(f"const unsigned char {symbol}[] = {{\n")
         for i in range(0, len(blob), 20):
@@ -90,3 +135,14 @@ if __name__ == "__main__":
         "#include \"art.h\"\n")
     emit("HoradricLightBeam", "art_beam", out)
     emit("LIGHTJET", "art_jet", out)
+
+    def sunbeam(frames, width, height):
+        """Three times as wide, then leant over by half a pixel per pixel of height — about 27
+        degrees. The foot stays where the upright beam's foot was, which is what the light has
+        to stand on."""
+        frames, width, height = widen(frames, width, height, 3)
+        foot = width // 2
+        frames, width, height = lean(frames, width, height, 0.5)
+        return frames, width, height, foot
+
+    emit("HoradricLightBeam", "art_slant", out, sunbeam)
