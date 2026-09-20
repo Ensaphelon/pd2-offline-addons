@@ -1,15 +1,25 @@
-# ---- sounds to audition -------------------------------------------------------------------
-# sound <a0> <a1> <a2> <a3> <a4>  <label>
-# Five arguments, because PD2's exported play function takes five and nobody has written down
-# which is which. F10 plays the next line each press. A sound that comes out at the wrong volume
-# or ignores the LOOT FILTER slider means the arguments are in the wrong order, not that the
-# sound is wrong — that is what these variations are for.
-sound 0 14 0 0 0    questdone, id in arg1
-sound 14 0 0 0 0    questdone, id in arg0
-sound 0 14 255 0 0  questdone, id in arg1, 255 in arg2
-sound 0 45 0 0 0    light shaft, id in arg1
-sound 0 40 0 0 0    spotlight, id in arg1
-sound 0 4718 0 0 0  the alert kassahi uses for rare maps, id in arg1
+# F10 plays the next line. The channel a sound obeys is NOT an argument: it is the Sound Group
+# column in the game's own Sounds.txt. Group 12 is the LOOT FILTER slider, and exactly sixteen
+# sounds live there — PD2's own drop "tinks". Everything below is group 12, so every one of these
+# is governed by LOOT FILTER.
+sound 0 4714 0 0 0    drop_tink01 [group 12 = LOOT FILTER]
+sound 0 4715 0 0 0    drop_tink02 [group 12 = LOOT FILTER]
+sound 0 4716 0 0 0    drop_tink03 [group 12 = LOOT FILTER]
+sound 0 4717 0 0 0    drop_tink04 [group 12 = LOOT FILTER]
+sound 0 4718 0 0 0    drop_tink05 [group 12 = LOOT FILTER]
+sound 0 4719 0 0 0    drop_tink06 [group 12 = LOOT FILTER]
+sound 0 4720 0 0 0    drop_tink07 [group 12 = LOOT FILTER]
+sound 0 4721 0 0 0    drop_tink08 [group 12 = LOOT FILTER]
+sound 0 4722 0 0 0    drop_tink09 [group 12 = LOOT FILTER]
+sound 0 4723 0 0 0    drop_tink10 [group 12 = LOOT FILTER]
+sound 0 4724 0 0 0    drop_tink11 [group 12 = LOOT FILTER]
+sound 0 4725 0 0 0    drop_tink12 [group 12 = LOOT FILTER]
+sound 0 4726 0 0 0    drop_tink13 [group 12 = LOOT FILTER]
+sound 0 4727 0 0 0    drop_tink14 [group 12 = LOOT FILTER]
+sound 0 4728 0 0 0    drop_tink15 [group 12 = LOOT FILTER]
+sound 0 4729 0 0 0    drop_tink16 [group 12 = LOOT FILTER]
+# And two from other groups, to hear the difference in which slider controls them.
+sound 0 14 0 0 0    questdone [group 3 — the one that is drowned by music]
+sound 0 40 0 0 0    spotlight [group 10]
 
-# ---- memory probe -------------------------------------------------------------------------
 player Rendan
