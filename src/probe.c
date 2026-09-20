@@ -425,6 +425,80 @@ static void walk_unit_table(void)
     log_line("");
 }
 
+/* The player unit is the anchor a renderer actually needs: from it come the act, the room, and
+   the room's own list of what is lying in it — a handful of pointers per frame instead of a
+   sweep. Finding it needs no string search and no guessing, because the items already told us
+   who owns them: every stored item's ItemData carries owner id 1, and the one on the ground
+   carries -1. So the player is the unit with dwType 0 and dwUnitId 1. */
+static void find_player_and_its_slot(void)
+{
+    log_line("player: looking for a unit with dwType=0 and dwUnitId=1");
+    DWORD player = 0;
+
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    BYTE *address = (BYTE *)info.lpMinimumApplicationAddress;
+    BYTE *limit = (BYTE *)info.lpMaximumApplicationAddress;
+
+    while (address < limit && !player) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(address, &mbi, sizeof(mbi))) break;
+        BYTE *next = (BYTE *)mbi.BaseAddress + mbi.RegionSize;
+        if (mbi.State == MEM_COMMIT && readable(mbi.Protect) &&
+            (const BYTE *)mbi.BaseAddress >= self_end) {
+            const BYTE *base = (const BYTE *)mbi.BaseAddress;
+            for (SIZE_T done = 0; done < mbi.RegionSize && !player; done += CHUNK) {
+                SIZE_T count = mbi.RegionSize - done;
+                if (count > CHUNK) count = CHUNK;
+                if (!safe_read(base + done, chunk, count)) continue;
+                for (SIZE_T offset = 0; offset + 0x20 <= count; offset += 4) {
+                    const DWORD *w = (const DWORD *)(chunk + offset);
+                    if (w[0] != 0 || w[3] != 1) continue;              /* dwType, dwUnitId */
+                    if (w[1] > 7) continue;                            /* class, 0..6 */
+                    DWORD first = 0;
+                    if (!safe_read((const void *)(UINT_PTR)w[5], &first, 4)) continue;
+                    player = (DWORD)(UINT_PTR)(base + done + offset);
+                    log_line("  candidate %08X: class=%lu pPlayerData=%08X",
+                             player, (unsigned long)w[1], w[5]);
+                    /* The name sits at the start of PlayerData — proof, not a guess. */
+                    char name[20] = {0};
+                    if (safe_read((const void *)(UINT_PTR)w[5], name, 16)) {
+                        name[16] = 0;
+                        log_line("  its PlayerData begins: \"%s\"", name);
+                    }
+                    break;
+                }
+            }
+        }
+        if (next <= address) break;
+        address = next;
+    }
+    if (!player) { log_line("  no player unit found"); return; }
+
+    /* And now the thing worth having: a fixed slot in D2Client that holds it. */
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return;
+    const BYTE *base = (const BYTE *)client;
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+    const IMAGE_SECTION_HEADER *section = IMAGE_FIRST_SECTION(nt);
+    int found = 0;
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
+        if (!(section->Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        const BYTE *from = base + section->VirtualAddress;
+        for (SIZE_T offset = 0; offset + 4 <= section->Misc.VirtualSize; offset += 4) {
+            DWORD value = 0;
+            if (!safe_read(from + offset, &value, 4)) continue;
+            if (value != player) continue;
+            log_line("  STATIC D2Client.dll+0x%06X holds the player unit",
+                     (unsigned)(from + offset - base));
+            found++;
+        }
+    }
+    if (!found) log_line("  nothing in D2Client's data points at it directly");
+    log_line("");
+}
+
 void probe_run(void)
 {
     if (target_count == 0) {
@@ -438,6 +512,7 @@ void probe_run(void)
     scan_for_referrers();
     scan_client_image_for_unit_slots();
     walk_unit_table();
+    find_player_and_its_slot();
     log_line("=== probe pass done in %lu ms ===", (unsigned long)(GetTickCount() - started));
 }
 
