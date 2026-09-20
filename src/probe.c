@@ -35,6 +35,9 @@ static int target_count;
    in the config we loaded it from. */
 static const BYTE *self_start, *self_end;
 
+static BOOL can_read(const BYTE *at, SIZE_T count);
+
+
 /* Every UnitAny this pass managed to identify. Enumerating items one per frame means walking the
    game's own list of them, and the way to find that list is to ask who points AT a unit we have
    already located. A referrer inside D2Client's own data is the prize: that is a fixed address,
@@ -103,7 +106,7 @@ static void dump_range(const BYTE *at, const BYTE *origin, int count)
 {
     for (int row = 0; row < count / 16; row++) {
         const BYTE *line = at + row * 16;
-        if (IsBadReadPtr(line, 16)) continue;
+        if (!can_read(line, 16)) continue;
         DWORD w[4];
         memcpy(w, line, sizeof(w));
         char ascii[17] = {0};
@@ -133,16 +136,21 @@ static void follow_item_data(const BYTE *hit)
 {
     const BYTE *unit = hit - GUID_TO_UNIT;
     const BYTE *slot = unit + UNIT_TO_ITEMDATA;
-    if (IsBadReadPtr(slot, 4)) return;
+    if (!can_read(slot, 4)) return;
     const BYTE *item_data = (const BYTE *)(*(const DWORD *)slot);
     /* A plausible heap pointer, not a small integer that happens to sit there. */
-    if ((DWORD)(UINT_PTR)item_data < 0x10000 || IsBadReadPtr(item_data, 0x40)) {
+    if (!can_read(item_data, 0x40)) {
         log_line("    -> pItemData %p is not readable", (void *)item_data);
         return;
     }
     log_line("    -> pItemData %p (offsets below are from ITS start)", (void *)item_data);
     dump_range(item_data, item_data, 0xB0);
-    remember_unit(unit);
+    /* dwType 4 is an item and quality is 1..9; anything else reached this far by coincidence. */
+    DWORD type = *(const DWORD *)unit;
+    DWORD quality = *(const DWORD *)item_data;
+    if (type == 4 && quality >= 1 && quality <= 9) remember_unit(unit);
+    else log_line("    (not an item unit: dwType=%lu quality=%lu — not traced)",
+                  (unsigned long)type, (unsigned long)quality);
 }
 
 static void dump_around(const BYTE *hit, const probe_target *target)
@@ -246,6 +254,91 @@ static void scan_for_referrers(void)
     log_line("");
 }
 
+/* IsBadReadPtr lies often enough to crash a process that trusts it — it was the first version of
+   this sweep, and it faulted mid-pass on the real game. VirtualQuery asks the kernel instead, and
+   one cached region answers for every address inside it, which is what keeps the cost bearable
+   when a sweep tests millions of candidates. */
+static MEMORY_BASIC_INFORMATION cached;
+static BOOL cache_valid;
+
+static BOOL can_read(const BYTE *at, SIZE_T count)
+{
+    if ((DWORD)(UINT_PTR)at < 0x10000) return FALSE;
+    if (!(cache_valid && at >= (const BYTE *)cached.BaseAddress &&
+          at + count <= (const BYTE *)cached.BaseAddress + cached.RegionSize)) {
+        if (!VirtualQuery(at, &cached, sizeof(cached))) { cache_valid = FALSE; return FALSE; }
+        cache_valid = TRUE;
+    }
+    if (cached.State != MEM_COMMIT || !readable(cached.Protect)) return FALSE;
+    return at + count <= (const BYTE *)cached.BaseAddress + cached.RegionSize;
+}
+
+/* Does this address hold something shaped like a UnitAny? dwType is 0..5 in this engine (player,
+   monster, object, missile, item, tile), and every unit has a readable data pointer at +0x14.
+   Two cheap tests, enough to tell a real unit from a number that happens to look like a pointer. */
+static BOOL looks_like_unit(const BYTE *candidate)
+{
+    if (!can_read(candidate, 0x40)) return FALSE;
+    DWORD type = *(const DWORD *)candidate;
+    if (type > 5) return FALSE;
+    /* A base-item/monster/object row number, not an address or a flag word. */
+    DWORD txtfile = *(const DWORD *)(candidate + 4);
+    if (txtfile > 8192) return FALSE;
+    const BYTE *data = (const BYTE *)(UINT_PTR)(*(const DWORD *)(candidate + UNIT_TO_ITEMDATA));
+    if (!can_read(data, 8)) return FALSE;
+    /* Whatever that points at starts with something small — a quality, a class, a flag set. It
+       is emphatically not another pointer, which is what every false positive in the code
+       section turned out to hold. */
+    return *(const DWORD *)data < 0x1000;
+}
+
+/* The game reaches its units through a static hash table — an array of list heads living in
+   D2Client's own data. Nothing points AT a unit from there except the head of its bucket, which
+   is why tracing referrers found only heap links. So this looks from the other end: every slot in
+   D2Client's image that holds a pointer to something unit-shaped. The table shows up as a run of
+   them at consecutive addresses, and its address is fixed for the build — which is the whole
+   point, because a renderer cannot scan memory every frame. */
+static void scan_client_image_for_unit_slots(void)
+{
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) { log_line("unit table: D2Client.dll is not loaded"); return; }
+
+    const BYTE *base = (const BYTE *)client;
+    log_line("unit table: sweeping D2Client.dll DATA for slots pointing at units (image %p)",
+             (void *)base);
+
+    /* Data sections only. The first version swept the whole image, and the code section is full
+       of instruction bytes that read as plausible pointers — that is what made it fault. A list
+       head lives in writable data, never in .text. */
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
+    const IMAGE_SECTION_HEADER *section = IMAGE_FIRST_SECTION(nt);
+    int found = 0;
+
+    for (int i = 0; i < nt->FileHeader.NumberOfSections && found < 200; i++, section++) {
+        if (!(section->Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        const BYTE *from = base + section->VirtualAddress;
+        SIZE_T size = section->Misc.VirtualSize;
+        log_line("  section %.8s at +0x%X, %lu bytes",
+                 section->Name, (unsigned)section->VirtualAddress, (unsigned long)size);
+        {
+            for (SIZE_T offset = 0; offset + 4 <= size; offset += 4) {
+                const BYTE *slot = from + offset;
+                if (!can_read(slot, 4)) continue;
+                const BYTE *value = (const BYTE *)(UINT_PTR)(*(const DWORD *)slot);
+                if (!looks_like_unit(value)) continue;
+                log_line("    +0x%06X -> %p  dwType=%lu txtfile=%lu",
+                         (unsigned)(slot - base), (void *)value,
+                         (unsigned long)*(const DWORD *)value,
+                         (unsigned long)*(const DWORD *)(value + 4));
+                if (++found >= 200) { log_line("  (stopping at %d)", found); break; }
+            }
+        }
+    }
+    if (found == 0) log_line("  nothing — the table is not reached by a plain pointer");
+    log_line("");
+}
+
 void probe_run(void)
 {
     if (target_count == 0) {
@@ -257,6 +350,7 @@ void probe_run(void)
     found_unit_count = 0;
     for (int i = 0; i < target_count; i++) scan_for(&targets[i]);
     scan_for_referrers();
+    scan_client_image_for_unit_slots();
     log_line("=== probe pass done in %lu ms ===", (unsigned long)(GetTickCount() - started));
 }
 
