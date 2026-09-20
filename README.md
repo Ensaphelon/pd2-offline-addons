@@ -65,13 +65,34 @@ real one, or the game goes down.
 
 | | |
 |---|---|
-| items reachable each frame | `D2Client.dll+0x10AE08`, the item row of the unit table |
 | the player | `D2Client.dll+0x10A60C` |
 | an item is on the ground | `UnitAny+0x10` (dwMode) is 3 |
 | its quality | `ItemData+0x00` — 5 set, 7 unique |
 | its identity | `ItemData+0x28`, in the same numbering pd2-holy-inventory's catalog uses |
 
+`D2Client.dll+0x10AE08` was written here as "the item row of the unit table" and that was wrong:
+every entry in it carries unit id 1 and no identity, and the real items — the ones found by their
+guid, at quite different addresses — are not in it at all. It is a pool. Ground detection works
+by searching memory, not by reading that table.
+
 The identity is present on the ground even before the item is identified — but only on the
 server-side unit, which exists in the same process in single player. The client's own copy of a
 ground item carries a zero there, which is why community loot filters hard-code 107 item names
 instead of reading one.
+
+## What is not solved
+
+Getting anything onto the screen. Six approaches failed, each for its own real reason:
+
+| attempt | why not |
+|---|---|
+| a line through Glide's `grDrawLine` | draws at the frame swap, when the frame is already composed |
+| the frame buffer via `grLfbLock` | D2GL refuses the lock outright |
+| `D2gfx` ordinal #10010 from the swap | same timing problem |
+| the same from inside the game's frame | the call fires, nothing appears — its six arguments mean something else |
+| an overlay attached to the item's unit | needs the game's own attach function, which has no import table to enumerate |
+| a client-side object spawned like a town portal | in single player no packet is involved, so there is nothing to replay |
+
+All six were searches for something the D2 community has had written down for twenty years. The
+next attempt should start from published 1.13c offsets — including BH's own, which are AGPL and
+therefore public — rather than from another memory sweep.
