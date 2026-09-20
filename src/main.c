@@ -12,6 +12,7 @@ void probe_init(void *module);
 void probe_run(void);
 void probe_play_line(int index);
 BOOL frame_hook_install(void);
+void probe_dump_paths(void);
 
 /* One F-key per configured line: F1 plays line 1, F2 line 2, and so on. Sequences and paced
    presses both failed for the same reason — they asked the listener to keep time. A key that
@@ -48,7 +49,8 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
         for (int i = 0; i < 12; i++) {
             BOOL down = (GetAsyncKeyState(VK_F1 + i) & 0x8000) != 0;
-            if (down && !was_down[i]) probe_play_line(i);
+            /* F12 is the position probe rather than a sound; nine lines is all the config has. */
+            if (down && !was_down[i]) { if (i == 11) probe_dump_paths(); else probe_play_line(i); }
             was_down[i] = down;
         }
         Sleep(40);

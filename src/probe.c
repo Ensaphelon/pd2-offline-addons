@@ -647,6 +647,55 @@ void probe_play_line(int index)
     play_sound(s->arg[0], s->arg[1], s->arg[2], s->arg[3], s->arg[4]);
 }
 
+/* The camera in this game is centred on the player, so an item's place on screen is a function
+   of how far it is from the player and nothing else — no camera globals to hunt for. What is
+   still unknown is which words inside a unit's path structure hold the position, so this prints
+   them for the player and for whatever is lying on the ground, to be read side by side.
+
+   UnitAny+0x2C is the path pointer for every unit type. */
+#define UNIT_TO_PATH 0x2C
+
+void probe_dump_paths(void)
+{
+    HMODULE client = GetModuleHandleA("D2Client.dll");
+    if (!client) return;
+    log_line("paths: the player first, then anything on the ground");
+
+    DWORD player = 0;
+    if (safe_read((const BYTE *)client + 0x10A60C, &player, 4) && player) {
+        DWORD path = 0;
+        if (safe_read((const void *)(UINT_PTR)(player + UNIT_TO_PATH), &path, 4) && path) {
+            log_line("  player unit %08X path %08X", player, path);
+            dump_range((const BYTE *)(UINT_PTR)path, (const BYTE *)(UINT_PTR)path, 0x40);
+        }
+    }
+
+    const BYTE *table = (const BYTE *)client + OFF_D2CLIENT_UNIT_TABLE_ITEMS;
+    for (int bucket = 0; bucket < UNIT_BUCKETS; bucket++) {
+        DWORD address = 0;
+        if (!safe_read(table + bucket * 4, &address, 4)) continue;
+        int depth = 0;
+        while (address && depth++ < 64) {
+            unit_head unit;
+            if (!read_unit(address, &unit) || unit.type != 4) break;
+            if (unit.mode == 3) {
+                DWORD quality = 0, identity = 0, path = 0;
+                safe_read((const void *)(UINT_PTR)unit.item_data, &quality, 4);
+                safe_read((const void *)(UINT_PTR)(unit.item_data + 0x28), &identity, 4);
+                safe_read((const void *)(UINT_PTR)(address + UNIT_TO_PATH), &path, 4);
+                log_line("  ground item %08X quality=%lu identity=%lu path %08X",
+                         address, (unsigned long)quality, (unsigned long)identity, path);
+                if (path)
+                    dump_range((const BYTE *)(UINT_PTR)path, (const BYTE *)(UINT_PTR)path, 0x40);
+            }
+            DWORD next = 0;
+            if (!safe_read((const void *)(UINT_PTR)(address + 0xEC), &next, 4)) break;
+            address = next;
+        }
+    }
+    log_line("paths: done");
+}
+
 /* Runs on every rendered frame. Counting the grail candidates lying in view is the cheapest
    thing that proves the whole chain works — the hook fires, the unit table reads, the items are
    there and their quality and identity come out — before a single pixel is drawn. */
