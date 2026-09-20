@@ -75,22 +75,42 @@ static void **redirect_import(HMODULE module, const char *dll, const char *symbo
     return NULL;
 }
 
+/* Which module actually calls Glide. D2Gfx was the guess and it was wrong — it is the renderer
+   FRONT end, and each backend is its own DLL. D2Glide.dll is the one that imports glide3x, but
+   the list is tried in order rather than hardcoded to one, since a player on a different
+   renderer loads a different backend. */
+static const char *const GLIDE_CALLERS[] = {
+    "D2Glide.dll", "D2Gfx.dll", "D2Direct3D.dll", "D2DDraw.dll", "Game.exe",
+};
+
 BOOL frame_hook_install(void)
 {
     if (hooked_slot) return TRUE;
-    HMODULE gfx = GetModuleHandleA("D2Gfx.dll");
-    if (!gfx) { log_line("frame: D2Gfx.dll is not loaded yet"); return FALSE; }
+    static DWORD last_complaint;
 
     void *previous = NULL;
-    hooked_slot = redirect_import(gfx, "glide3x.dll", "_grBufferSwap@4", (void *)our_swap,
-                                  &previous);
+    for (unsigned i = 0; i < sizeof(GLIDE_CALLERS) / sizeof(GLIDE_CALLERS[0]); i++) {
+        HMODULE module = GetModuleHandleA(GLIDE_CALLERS[i]);
+        if (!module) continue;
+        hooked_slot = redirect_import(module, "glide3x.dll", "_grBufferSwap@4",
+                                      (void *)our_swap, &previous);
+        if (hooked_slot) {
+            log_line("frame: hooked %s's call to glide3x!_grBufferSwap (was %p)",
+                     GLIDE_CALLERS[i], previous);
+            break;
+        }
+    }
     if (!hooked_slot) {
-        log_line("frame: D2Gfx.dll does not import _grBufferSwap@4 by name");
+        /* Tried every frame until it works, so this must not shout every time. */
+        DWORD now = GetTickCount();
+        if (now - last_complaint > 10000) {
+            last_complaint = now;
+            log_line("frame: nothing loaded yet imports glide3x!_grBufferSwap — still waiting");
+        }
         return FALSE;
     }
     original_swap = (buffer_swap_fn)previous;
     last_report = GetTickCount();
-    log_line("frame: hooked D2Gfx's call to glide3x!_grBufferSwap (was %p)", previous);
     return TRUE;
 }
 
