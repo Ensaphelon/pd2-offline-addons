@@ -26,11 +26,19 @@ static BYTE *thunks;
 
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
-static void write_thunk(BYTE *at, volatile LONG *counter, void **original)
+static void write_thunk(BYTE *at, int index, volatile LONG *counter, void **original)
 {
-    at[0] = 0xFF; at[1] = 0x05; memcpy(at + 2, &counter, 4);
-    at[6] = 0xFF; at[7] = 0x25; memcpy(at + 8, &original, 4);
+    volatile LONG *last = &last_index;
+    at[0] = 0xC7; at[1] = 0x05; memcpy(at + 2, &last, 4); memcpy(at + 6, &index, 4);
+    at[10] = 0xFF; at[11] = 0x05; memcpy(at + 12, &counter, 4);
+    at[16] = 0xFF; at[17] = 0x25; memcpy(at + 18, &original, 4);
 }
+
+/* Which call was the last one of the frame. Counting said which ordinals are frame boundaries;
+   this says which of them comes last, and that is where something drawn over the world belongs.
+   A full ordering would need real logic inside a hand-assembled thunk; "the most recent one"
+   needs one more instruction, and the frame hook reads it at exactly the right moment. */
+static volatile LONG last_index = -1;
 
 static void **redirect_ordinal(HMODULE module, const char *dll, WORD ordinal, void *with,
                                void **out_original)
@@ -93,13 +101,13 @@ BOOL calls_watch_install(void)
     int count = collect_ordinals(client, "D2Win.dll", wanted, MAX_HOOKS);
     if (!count) { log_line("calls: D2Client imports no D2Win ordinals"); return FALSE; }
 
-    thunks = (BYTE *)VirtualAlloc(NULL, count * 16, MEM_COMMIT | MEM_RESERVE,
+    thunks = (BYTE *)VirtualAlloc(NULL, count * 32, MEM_COMMIT | MEM_RESERVE,
                                   PAGE_EXECUTE_READWRITE);
     if (!thunks) { log_line("calls: could not allocate thunks"); return FALSE; }
 
     for (int i = 0; i < count; i++) {
-        BYTE *thunk = thunks + i * 16;
-        write_thunk(thunk, &counts[i], &originals[i]);
+        BYTE *thunk = thunks + i * 32;
+        write_thunk(thunk, i, &counts[i], &originals[i]);
         void *previous = NULL;
         void **slot = redirect_ordinal(client, "D2Win.dll", wanted[i], thunk, &previous);
         if (!slot) continue;
@@ -112,10 +120,17 @@ BOOL calls_watch_install(void)
     return hook_count > 0;
 }
 
+/* Record one frame's worth of ordinals in arrival order, then stop. Done from the counting side
+   rather than inside the thunks: a thunk that writes two places is two more chances to get a
+   hand-assembled instruction wrong, and this is only needed once. */
 /* Called from the frame hook, so "per frame" means per frame. */
 void calls_report(DWORD frames)
 {
     if (!hook_count || !frames) return;
+    LONG last = last_index;
+    if (last >= 0 && last < hook_count)
+        log_line("calls: the LAST D2Win call before the frame was handed over is #%u",
+                 ordinals[last]);
     log_line("calls: over %lu frames —", (unsigned long)frames);
     for (int i = 0; i < hook_count; i++) {
         LONG n = InterlockedExchange(&counts[i], 0);
