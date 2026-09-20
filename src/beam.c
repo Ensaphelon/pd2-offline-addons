@@ -74,8 +74,9 @@ static struct {
     int anchor;   /* 0 the view offset, 1 relative to the player — the proven one, and the
                      default until the report below says the other is sound, because a sprite
                      drawn at a coordinate a transform got wrong is how the game went down */
-    int test;     /* draw one at a fixed spot on screen, so the art can be judged and the draw
-                     proved safe without anything having to be dropped first */
+    int test;     /* 1 draws one at a fixed spot on screen, so the art can be judged and the
+                     draw proved safe without anything having to be dropped first; 2 draws the
+                     row of blends below */
     int capture;  /* frames to watch the game's own calls for, looking for the one that draws
                      a cell — set it again to take another look without restarting */
     int on;
@@ -320,36 +321,61 @@ static void draw_foot_at(int x, int y, int tick)
         draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_width / 2, y);
 }
 
-/* Both transforms, for the player, once — whose own place on screen is known: near the middle
-   when nothing is open. The view-offset one has never been checked, and a coordinate it got
-   badly wrong is the best explanation left for the game going down the first time a sprite was
-   drawn over a real item. */
+/* Where the view's origin actually lives.
+ *
+ * D2Client+0x11C1F8 was taken for it on BH's word and is not: with the player at world 3993,5228
+ * on a 1068x600 screen it read 0,0 and its divisor read 20, which put the light twenty thousand
+ * pixels off. So instead of guessing a second variable, the number that is NEEDED is worked out —
+ * with nothing open the player is at the middle of the screen, so the offset is simply the world
+ * pixel minus half the screen — and printed beside every candidate BH names. Logged again
+ * whenever any of them moves, which is what opening a panel does, so one session answers both
+ * halves of the question. */
+#define OFF_MOUSEOFFSETY 0x11995C
+#define OFF_MOUSEOFFSETX 0x119960
+#define OFF_PANELOFFSETX 0x11B9A0
+#define OFF_GETMOUSEXOFF 0x3F6C0
+#define OFF_GETMOUSEYOFF 0x3F6D0
+
+typedef int(__fastcall *get_offset_fn)(void);
+
 static void report_transform(const BYTE *base)
 {
-    static int said;
-    if (said) return;
-    said = 1;
+    static DWORD last_at;
+    static int last[5];
+    static int lines;
+
+    if (lines > 14) return;
+    if (last_at && GetTickCount() - last_at < 1000) return;
 
     get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
     void *player = get_player();
-    if (!player) { said = 0; return; }
+    if (!player) return;
     get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
     get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
-    int px = get_x(player), py = get_y(player);
-    const LONG *offset = (const LONG *)(base + OFF_VIEW_OFFSET);
-    int divisor = *(const int *)(base + OFF_VIEW_DIVISOR);
-    DWORD width = *(const DWORD *)(base + OFF_SCREENSIZEX);
-    DWORD height = *(const DWORD *)(base + OFF_SCREENSIZEY);
-    int ox = 0, oy = 0, ax = 0, ay = 0;
-    int was = cfg.anchor;
-    cfg.anchor = 0; world_to_screen(base, px, py, &ox, &oy);
-    cfg.anchor = 1; world_to_screen(base, px, py, &ax, &ay);
-    cfg.anchor = was;
+    get_offset_fn mouse_x = (get_offset_fn)(base + OFF_GETMOUSEXOFF);
+    get_offset_fn mouse_y = (get_offset_fn)(base + OFF_GETMOUSEYOFF);
 
-    log_line("beam: screen %lux%lu, player world %d,%d — view offset says %d,%d; "
-             "half the screen says %d,%d; raw offset %ld,%ld divisor %d",
-             (unsigned long)width, (unsigned long)height, px, py, ox, oy, ax, ay,
-             (long)offset[0], (long)offset[1], divisor);
+    int now[5];
+    now[0] = *(const int *)(base + OFF_MOUSEOFFSETX);
+    now[1] = *(const int *)(base + OFF_MOUSEOFFSETY);
+    now[2] = *(const int *)(base + OFF_PANELOFFSETX);
+    now[3] = mouse_x();
+    now[4] = mouse_y();
+
+    int same = last_at != 0;
+    for (int i = 0; i < 5; i++) if (now[i] != last[i]) same = 0;
+    if (same) return;
+    for (int i = 0; i < 5; i++) last[i] = now[i];
+    last_at = GetTickCount();
+    lines++;
+
+    int px = get_x(player), py = get_y(player);
+    int width = (int)*(const DWORD *)(base + OFF_SCREENSIZEX);
+    int height = (int)*(const DWORD *)(base + OFF_SCREENSIZEY);
+    log_line("origin: needs %d,%d (player %d,%d on %dx%d) — MouseOffset %d,%d  PanelOffsetX %d  "
+             "GetMouseOffset %d,%d",
+             (px - py) * 16 - width / 2, (px + py) * 8 - height / 2,
+             px, py, width, height, now[0], now[1], now[2], now[3], now[4]);
 }
 
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
@@ -379,7 +405,20 @@ void beam_draw(void)
     if (cfg.test) {
         static int said;
         if (!said) { said = 1; log_line("beam: drawing the fixed test sprite"); }
-        draw_foot_at(160, 400, tick);
+        if (cfg.test >= 2) {
+            /* Every blend the draw takes, side by side, left to right. Which number makes this
+               art look like light rather than a black slab is a question a screenshot answers in
+               one go, and eight guesses answer in eight sessions. The art is 81% near-black, so
+               it is drawn to be added to what is behind it, not laid over it. */
+            int was = cfg.trans;
+            for (int blend = 0; blend < 8; blend++) {
+                cfg.trans = blend;
+                draw_foot_at(120 + blend * 80, 460, tick);
+            }
+            cfg.trans = was;
+        } else {
+            draw_foot_at(160, 400, tick);
+        }
         if (said == 1) { said = 2; log_line("beam: the draw returned — it is safe"); }
     }
 

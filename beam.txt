@@ -9,6 +9,6 @@ dx      0         # nudge right
 dy      0         # nudge down
 anchor  player    # player (proven) or offset (follows the view when a panel slides it)
 on      1
-test    1         # draw one at a fixed spot near the left edge, to judge the art safely
-capture 40        # frames to watch the game's own drawing calls for; set again to look afresh
+test    2         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
+capture 0         # frames to watch the game's own drawing calls for; set again to look afresh
 colour  0         # its last argument, a small number — the game passes 0 or 1
