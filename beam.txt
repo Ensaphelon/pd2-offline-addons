@@ -12,6 +12,6 @@ on      1
 test    0         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
 capture 0         # frames to watch the game's own drawing calls for; set again to look afresh
 colour  0         # its last argument, a small number — the game passes 0 or 1
-trace   1         # print the shape of one frame to the log
+trace   0         # print the shape of one frame to the log
 drawon  10054     # after the world, before the name plates and the cursor; 0 means last
-mark    2         # 1 a cross where the item is reckoned to be, 2 one at the player too
+mark    0         # 1 a cross where the item is reckoned to be, 2 one at the player too
