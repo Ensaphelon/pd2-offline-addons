@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <string.h>
 #include "log.h"
 
 /* A moment on every rendered frame, which is where anything drawn over the world has to happen.
@@ -11,6 +12,70 @@
  *
  * The alternative was finding D2Client's own per-frame draw by pattern, which is the kind of
  * search that costs days and breaks on the next game update. */
+
+/* Glide is a C API and every entry point we need is exported by name, so drawing needs no
+   offsets either. The vertex is whatever layout the game last set; x and y at the front is the
+   one thing every layout agrees on, which is all a flat-coloured line needs. */
+typedef void (__stdcall *gr_draw_line_fn)(const void *, const void *);
+typedef void (__stdcall *gr_constant_colour_fn)(unsigned long);
+typedef void (__stdcall *gr_colour_combine_fn)(unsigned long, unsigned long, unsigned long,
+                                               unsigned long, int);
+typedef void (__stdcall *gr_alpha_blend_fn)(unsigned long, unsigned long, unsigned long,
+                                            unsigned long);
+
+static gr_draw_line_fn gr_draw_line;
+static gr_constant_colour_fn gr_constant_colour;
+static gr_colour_combine_fn gr_colour_combine;
+static gr_alpha_blend_fn gr_alpha_blend;
+
+/* Glide constants, from its own header. Spelled out rather than included because the SDK is not
+   here and these five numbers are the whole of what is needed. */
+#define GR_COMBINE_FUNCTION_LOCAL        0x2
+#define GR_COMBINE_FACTOR_NONE           0x0
+#define GR_COMBINE_LOCAL_CONSTANT        0x0
+#define GR_COMBINE_OTHER_NONE            0x0
+#define GR_BLEND_SRC_ALPHA               0x4
+#define GR_BLEND_ONE_MINUS_SRC_ALPHA     0x5
+#define GR_BLEND_ONE                     0x1
+#define GR_BLEND_ZERO                    0x0
+
+typedef struct { float x, y, pad[14]; } glide_vertex;
+
+/* A plain vertical line at a fixed spot, drawn before the frame is handed over. Nothing is
+   computed here on purpose: if this appears, drawing works, and position becomes the only thing
+   left to get wrong. */
+static void draw_test_line(void)
+{
+    if (!gr_draw_line) return;
+    gr_colour_combine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                      GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, 0);
+    gr_alpha_blend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                   GR_BLEND_ONE, GR_BLEND_ZERO);
+    gr_constant_colour(0xC0FFE8A0);      /* a warm, mostly-opaque gold */
+
+    glide_vertex top, bottom;
+    memset(&top, 0, sizeof(top));
+    memset(&bottom, 0, sizeof(bottom));
+    top.x = 400.0f;  top.y = 80.0f;
+    bottom.x = 400.0f; bottom.y = 400.0f;
+    gr_draw_line(&top, &bottom);
+}
+
+static void resolve_glide(void)
+{
+    if (gr_draw_line) return;
+    HMODULE glide = GetModuleHandleA("glide3x.dll");
+    if (!glide) return;
+    gr_draw_line = (gr_draw_line_fn)GetProcAddress(glide, "_grDrawLine@8");
+    gr_constant_colour = (gr_constant_colour_fn)GetProcAddress(glide, "_grConstantColorValue@4");
+    gr_colour_combine = (gr_colour_combine_fn)GetProcAddress(glide, "_grColorCombine@20");
+    gr_alpha_blend = (gr_alpha_blend_fn)GetProcAddress(glide, "_grAlphaBlendFunction@16");
+    log_line("frame: glide draw entry points %s",
+             (gr_draw_line && gr_constant_colour && gr_colour_combine && gr_alpha_blend)
+             ? "all found" : "INCOMPLETE");
+    if (!(gr_draw_line && gr_constant_colour && gr_colour_combine && gr_alpha_blend))
+        gr_draw_line = NULL;
+}
 
 typedef void (__stdcall *buffer_swap_fn)(int);
 static buffer_swap_fn original_swap;
@@ -33,6 +98,8 @@ static void __stdcall our_swap(int interval)
         last_report = now;
     }
     frame_tick();
+    resolve_glide();
+    draw_test_line();
     if (original_swap) original_swap(interval);
 }
 
