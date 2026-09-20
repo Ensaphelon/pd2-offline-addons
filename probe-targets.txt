@@ -1,15 +1,13 @@
-# Press slowly — a second between presses. Sounds overlap otherwise and the comparison is lost.
-# The claim under test is not "quieter" but "silent": if arg3 is the volume, every SILENT line
-# below must produce nothing at all.
-sound 0 4718 255 255 0    LOUD    (arg3 = 255)
-sound 0 4718 255 0 0      SILENT? (arg3 = 0)
-sound 0 4718 255 255 0    LOUD    (arg3 = 255)
-sound 0 4718 255 0 0      SILENT? (arg3 = 0)
-# And the mirror test: hold arg3 at full and move arg2 instead. If THESE differ, the two
-# arguments are the other way round and the name's "Volume Or Priority" reads in that order.
-sound 0 4718 255 255 0    arg2 = 255, arg3 = 255
-sound 0 4718 0 255 0      arg2 = 0,   arg3 = 255
-sound 0 4718 255 255 0    arg2 = 255, arg3 = 255
-sound 0 4718 0 255 0      arg2 = 0,   arg3 = 255
+# One F10 press plays all of this, 1.6s apart. Listen for the pattern, not for single sounds.
+# Expected if arg3 is the volume: loud, silence, loud, silence.
+sound 0 4718 255 255 0    1 LOUD
+sound 0 4718 255 0 0      2 silent?
+sound 0 4718 255 255 0    3 LOUD
+sound 0 4718 255 0 0      4 silent?
+# Then the same shape with arg2 moving instead, arg3 held at full.
+sound 0 4718 255 255 0    5 LOUD
+sound 0 4718 0 255 0      6 silent?
+sound 0 4718 255 255 0    7 LOUD
+sound 0 4718 0 255 0      8 silent?
 
 player Rendan

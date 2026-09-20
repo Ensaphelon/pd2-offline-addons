@@ -11,6 +11,7 @@
 void probe_init(void *module);
 void probe_run(void);
 void probe_play_next_sound(void);
+void probe_play_sequence(void);
 
 #define PROBE_KEY VK_F9
 #define SOUND_KEY VK_F10
@@ -23,7 +24,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     probe_init(module);
     log_line("a pass runs by itself %d seconds from now; F9 takes another one any time",
              AUTO_PASS_MS / 1000);
-    log_line("F10 plays the next configured sound");
+    log_line("F10 plays the whole configured sequence, spaced out");
 
     /* The automatic pass is the one that matters: a keyboard that does not send F9 the way the
        game expects would otherwise leave us with an empty log and no idea why. F9 stays as a way
@@ -45,7 +46,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
         was_down = down;
 
         BOOL sound_down = (GetAsyncKeyState(SOUND_KEY) & 0x8000) != 0;
-        if (sound_down && !sound_was_down) probe_play_next_sound();
+        if (sound_down && !sound_was_down) probe_play_sequence();
         sound_was_down = sound_down;
         Sleep(50);
     }
