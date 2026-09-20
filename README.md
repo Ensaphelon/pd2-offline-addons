@@ -99,7 +99,7 @@ What works, all from SlashDiablo Maphack's `D2Ptrs.h` (AGPL, so published) unles
 | | |
 |---|---|
 | `D2Gfx #10014` | `DrawRectangle(x1, y1, x2, y2, colour, transparency)` |
-| `D2Gfx #10019` | `DrawCellContextEx(context, x, y, light, transparency, colour)` |
+| `D2Gfx #10041` | `DrawAutomapCell2(context, x, y, bright2, bright, colour table)` — what d2bs draws its own images through |
 | `D2Cmp #10006` | `InitCellFile(buffer, &out, source, line, version, name)` |
 | `D2Client+0x1630` / `+0x1660` | `GetUnitX` / `GetUnitY`, `__fastcall` |
 | `D2Client+0x11C1F8` | the view's origin on screen, a `POINT` |
@@ -132,6 +132,15 @@ python tools-beam/build_dc6.py src/art.c
 
 `tools-beam/preview.py` and `roundtrip.py` render both the decode and the re-encode to PNG, which
 is how the format was checked before the game ever saw it.
+
+`#10019 DrawCellContextEx` was the first guess and took the game down on the first drop. Both
+calls are six `__stdcall` arguments — confirmed by the `ret 0x18` at the end of each, which is
+how the ordinals were checked rather than trusted — but #10041 is the one with working code
+behind it, and its last argument is a 256-byte colour table where a bare zero had been passed.
+Two guards came out of that round: the buffer is read back after `InitCellFile` and nothing is
+drawn from it unless the first cell reports the size we put in, and `test 1` draws one sprite at
+a fixed spot on screen so a bad draw falls over on the way into the game rather than over a rare
+item.
 
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.

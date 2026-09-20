@@ -13,17 +13,40 @@
  * improvements apply to it exactly as they apply to the game's own effects.
  *
  *   D2Cmp #10006  InitCellFile(buffer, &out, source, line, version, name)
- *   D2Gfx #10019  DrawCellContextEx(context, x, y, light, transparency, colour)
+ *   D2Gfx #10041  DrawAutomapCell2(context, x, y, bright2, bright, colour table)
+ *
+ * #10019 DrawCellContextEx was tried first and took the game down the moment something was
+ * dropped. #10041 is the one d2bs actually ships an image through, arguments and all, and its
+ * colour table is the difference: a 256-byte identity table rather than a bare zero where a
+ * pointer belongs.
  *
  * Both from SlashDiablo Maphack's D2Ptrs.h (AGPL, so published), and the CellContext shape —
  * frame number at +0x00, the CellFile at +0x34 — from its CommonStructs.h. */
 
 typedef void(__stdcall *init_cell_fn)(void *file, void **out, const char *source, DWORD line,
                                       DWORD version, const char *name);
-typedef void(__stdcall *draw_cell_fn)(void *context, int x, int y, int light, int trans,
-                                      int colour);
+/* D2Gfx #10041, the call d2bs uses to put an image of its own on the screen:
+   (context, x, y, bright2, bright, colour table). The table is 256 bytes and identity leaves the
+   art its own colours. Its two brightness arguments are what d2bs passes as -1 and 5. */
+typedef void(__stdcall *draw_cell_fn)(void *context, int x, int y, int bright2, int bright,
+                                      const BYTE *table);
 typedef void *(__stdcall *get_player_fn)(void);
 typedef int(__fastcall *get_coord_fn)(void *unit);
+
+/* After InitCellFile the frame offsets in the buffer have become GfxCell pointers. Reading one
+   back is how we know the game accepted the file at all — and drawing through a pointer it did
+   not accept is exactly the crash that cost a test round. */
+typedef struct {
+    DWORD flags, width, height, xoffs, yoffs, _pad, parent, length;
+} gfx_cell;
+
+/* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first:
+   IsBadReadPtr and VirtualQuery-then-read have each taken the game down here already. */
+static int safe_read(const void *at, void *into, SIZE_T bytes)
+{
+    SIZE_T got = 0;
+    return ReadProcessMemory(GetCurrentProcess(), at, into, bytes, &got) && got == bytes;
+}
 
 #define OFF_GETPLAYERUNIT 0xA4D60
 #define OFF_GETUNITX 0x1630
@@ -38,13 +61,16 @@ typedef int(__fastcall *get_coord_fn)(void *unit);
    runs, so trying another blend or nudging the sprite is a text edit and not a rebuild. */
 static struct {
     int art;      /* 0 beam, 1 jet, 2 both */
-    int trans;    /* D2's blend level; 0 is solid, 5 blends */
-    int colour;   /* palette shift, 0 for the art's own colours */
+    int trans;    /* the draw's second brightness argument; d2bs passes 5 */
+    int bright;   /* its first; d2bs passes -1 */
+    int ordinal;  /* which D2Gfx call does the drawing */
     int rate;     /* game frames per sprite frame */
     int dx, dy;   /* nudge, in pixels */
     int anchor;   /* 0 the view offset, 1 relative to the player */
+    int test;     /* draw one at a fixed spot on screen, so the art can be judged and the draw
+                     proved safe without anything having to be dropped first */
     int on;
-} cfg = {0, 5, 0, 3, 0, 0, 0, 1};
+} cfg = {0, 5, -1, 10041, 3, 0, 0, 0, 1, 1};
 
 static char config_path[MAX_PATH];
 static FILETIME config_stamp;
@@ -81,28 +107,48 @@ void beam_reload(void)
             continue;
         }
         if (sscanf(line, "trans %i", &value) == 1) { cfg.trans = value; continue; }
-        if (sscanf(line, "colour %i", &value) == 1) { cfg.colour = value; continue; }
+        if (sscanf(line, "bright %i", &value) == 1) { cfg.bright = value; continue; }
+        if (sscanf(line, "draw %i", &value) == 1) { cfg.ordinal = value; continue; }
         if (sscanf(line, "rate %i", &value) == 1) { cfg.rate = value > 0 ? value : 1; continue; }
         if (sscanf(line, "dx %i", &value) == 1) { cfg.dx = value; continue; }
         if (sscanf(line, "dy %i", &value) == 1) { cfg.dy = value; continue; }
+        if (sscanf(line, "test %i", &value) == 1) { cfg.test = value; continue; }
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
-    log_line("beam: art=%d trans=%d colour=%d rate=%d dx=%d dy=%d anchor=%d on=%d",
-             cfg.art, cfg.trans, cfg.colour, cfg.rate, cfg.dx, cfg.dy, cfg.anchor, cfg.on);
+    log_line("beam: art=%d draw=#%d trans=%d bright=%d rate=%d dx=%d dy=%d anchor=%d test=%d on=%d",
+             cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.rate, cfg.dx, cfg.dy,
+             cfg.anchor, cfg.test, cfg.on);
 }
 
 /* One CellFile per sprite, built the first time it is wanted. The buffer has to stay: InitCellFile
    rewrites it in place into the structure the drawing side walks. */
 static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned int size,
-                        const char *name)
+                        int width, int height, const char *name)
 {
     void *buffer = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!buffer) return NULL;
     memcpy(buffer, blob, size);
     void *cells = buffer;
     init(buffer, &cells, "pd2holygrail", 0, (DWORD)-1, name);
-    log_line("beam: %s is %u bytes of DC6, CellFile at %p", name, size, cells);
+
+    /* The cell pointers live at +0x18; before init they are offsets into the file, so a small
+       number here means the game did not take the file and nothing may be drawn from it. */
+    DWORD first = 0;
+    gfx_cell cell;
+    if (!safe_read((const BYTE *)cells + 0x18, &first, sizeof(first)) || first < 0x10000 ||
+        !safe_read((const void *)(UINT_PTR)first, &cell, sizeof(cell))) {
+        log_line("beam: %s was not accepted by InitCellFile (first cell reads as %#lx)",
+                 name, (unsigned long)first);
+        return NULL;
+    }
+    if ((int)cell.width != width || (int)cell.height != height) {
+        log_line("beam: %s came back %lux%lu, expected %dx%d — not drawing it",
+                 name, (unsigned long)cell.width, (unsigned long)cell.height, width, height);
+        return NULL;
+    }
+    log_line("beam: %s is %u bytes of DC6, first cell %lux%lu at %#lx", name, size,
+             (unsigned long)cell.width, (unsigned long)cell.height, (unsigned long)first);
     return cells;
 }
 
@@ -111,36 +157,47 @@ static void *cells_beam, *cells_jet;
 
 static int resolve(void)
 {
-    static int tried;
-    if (tried) return draw_cell != NULL;
-    tried = 1;
+    static int tried, ordinal;
+    if (tried && ordinal == cfg.ordinal) return draw_cell != NULL && cells_beam != NULL;
 
     HMODULE gfx = GetModuleHandleA("D2gfx.dll");
     if (!gfx) gfx = GetModuleHandleA("D2Gfx.dll");
     HMODULE cmp = GetModuleHandleA("D2CMP.dll");
-    if (!gfx || !cmp) {
-        log_line("beam: D2gfx=%p D2CMP=%p — not both loaded yet", (void *)gfx, (void *)cmp);
-        tried = 0;
-        return 0;
-    }
-    init_cell_fn init = (init_cell_fn)GetProcAddress(cmp, MAKEINTRESOURCEA(10006));
-    draw_cell = (draw_cell_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(10019));
-    log_line("beam: D2CMP #10006 at %p, D2gfx #10019 at %p", (void *)init, (void *)draw_cell);
-    if (!init || !draw_cell) { draw_cell = NULL; return 0; }
+    if (!gfx || !cmp) return 0;
 
-    cells_beam = make_cells(init, art_beam, art_beam_size, "beam");
-    cells_jet = make_cells(init, art_jet, art_jet_size, "jet");
-    return cells_beam != NULL;
+    tried = 1;
+    ordinal = cfg.ordinal;
+    draw_cell = (draw_cell_fn)GetProcAddress(gfx, MAKEINTRESOURCEA(cfg.ordinal));
+    log_line("beam: D2gfx #%d at %p", cfg.ordinal, (void *)draw_cell);
+    if (!draw_cell) return 0;
+
+    if (!cells_beam && !cells_jet) {
+        init_cell_fn init = (init_cell_fn)GetProcAddress(cmp, MAKEINTRESOURCEA(10006));
+        log_line("beam: D2CMP #10006 at %p", (void *)init);
+        if (!init) { draw_cell = NULL; return 0; }
+        cells_beam = make_cells(init, art_beam, art_beam_size,
+                                art_beam_width, art_beam_height, "beam");
+        cells_jet = make_cells(init, art_jet, art_jet_size,
+                               art_jet_width, art_jet_height, "jet");
+    }
+    return cells_beam != NULL || cells_jet != NULL;
 }
 
 static void draw_sprite(void *cells, int frame, int x, int y)
 {
+    /* Identity, so every palette index comes out as itself and the art keeps its own colours.
+       d2bs keeps two of these and alternates because the renderer caches the pointer; nothing
+       here ever changes the table, so one is enough. */
+    static BYTE table[256];
+    if (!table[1]) for (int i = 0; i < 256; i++) table[i] = (BYTE)i;
+
     /* CellContext: the frame number at the front, the CellFile at +0x34, zero in between. */
     DWORD context[14];
+    if (!cells) return;
     memset(context, 0, sizeof(context));
     context[0] = (DWORD)frame;
     context[13] = (DWORD)(UINT_PTR)cells;
-    draw_cell(context, x, y, -1, cfg.trans, cfg.colour);
+    draw_cell(context, x, y, cfg.bright, cfg.trans, table);
 }
 
 /* World to screen.
@@ -177,19 +234,24 @@ static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_
     return 1;
 }
 
+/* x, y is where the light stands: the foot of the sprite. The game is given the top-left corner
+   — that is what d2bs subtracts a cell's own offsets from to clip against the screen — so the
+   height comes off the y and half the width off the x. */
+static void draw_foot_at(int x, int y, int tick)
+{
+    if (cfg.art == 1 || cfg.art == 2)
+        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames,
+                    x - art_jet_width / 2, y - art_jet_height);
+    if (cfg.art == 0 || cfg.art == 2)
+        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames,
+                    x - art_beam_width / 2, y - art_beam_height);
+}
+
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
 {
     int x, y;
     if (!world_to_screen(base, world_x, world_y, &x, &y)) return;
-    x += cfg.dx;
-    y += cfg.dy;
-
-    /* The sprite's bottom sits on the item and it rises from there, so the anchor is the middle
-       of its foot: half a width left, and the y the game is given is the bottom edge. */
-    if (cfg.art == 1 || cfg.art == 2)
-        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_width / 2, y);
-    if (cfg.art == 0 || cfg.art == 2)
-        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_width / 2, y);
+    draw_foot_at(x + cfg.dx, y + cfg.dy, tick);
 }
 
 /* Every item lying on the ground, out of the client's own unit table: six rows of 128 buckets,
@@ -201,6 +263,17 @@ void beam_draw(void)
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     tick++;
+
+    /* Once, at a fixed spot near the left edge, before any item is involved: if the game is
+       going to fall over drawing this it should do it on the way in, not when something rare
+       has just dropped. It also puts the art on screen next to the game's own graphics, which
+       is the only way to judge it. Turn it off with `test 0`. */
+    if (cfg.test) {
+        static int said;
+        if (!said) { said = 1; log_line("beam: drawing the fixed test sprite"); }
+        draw_foot_at(160, 400, tick);
+        if (said == 1) { said = 2; log_line("beam: the draw returned — it is safe"); }
+    }
 
     const BYTE *base = (const BYTE *)client;
     const BYTE *row = base + OFF_UNIT_TABLE + 4 * (128 * 4);
