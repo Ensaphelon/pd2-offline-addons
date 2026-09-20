@@ -593,9 +593,30 @@ void probe_run(void)
 /* Plays the next configured line, so one key press walks the whole list and the log says which
    one was just heard. Finding both the right sound and the right argument order is a listening
    exercise, and this is the shortest loop between a guess and hearing it. */
+static void resolve_play_sound(void)
+{
+    if (play_sound) return;
+    /* Looked up on use, not at load. This plugin comes in through Game.exe's import table, which
+       is the earliest moment there is — ProjectDiablo.dll is not loaded yet, and asking for it
+       then simply answers "no". */
+    HMODULE pd2 = GetModuleHandleA("ProjectDiablo.dll");
+    if (!pd2) { log_line("sound: ProjectDiablo.dll still is not loaded"); return; }
+    play_sound = (play_sound_fn)GetProcAddress(
+        pd2, "_D2Client_PlaySoundWithCustomVolumeOrPriority@20");
+    log_line("sound: ProjectDiablo.dll at %p, function %s", (void *)pd2,
+             play_sound ? "found" : "NOT found by that name");
+    if (!play_sound) {
+        /* Some toolchains export it undecorated; try that before giving up. */
+        play_sound = (play_sound_fn)GetProcAddress(
+            pd2, "D2Client_PlaySoundWithCustomVolumeOrPriority");
+        if (play_sound) log_line("sound: found under the undecorated name");
+    }
+}
+
 void probe_play_next_sound(void)
 {
-    if (!play_sound) { log_line("sound: ProjectDiablo.dll has not given us the function"); return; }
+    resolve_play_sound();
+    if (!play_sound) return;
     if (!sound_count) { log_line("sound: no 'sound ...' lines in the config"); return; }
     sound_probe *s = &sounds[sound_next % sound_count];
     log_line("sound: playing (%d, %d, %d, %d, %d) — %s",
@@ -606,15 +627,7 @@ void probe_play_next_sound(void)
 
 void probe_init(void *module)
 {
-    HMODULE pd2 = GetModuleHandleA("ProjectDiablo.dll");
-    if (pd2) {
-        play_sound = (play_sound_fn)GetProcAddress(
-            pd2, "_D2Client_PlaySoundWithCustomVolumeOrPriority@20");
-        log_line("sound: ProjectDiablo.dll at %p, function %s", (void *)pd2,
-                 play_sound ? "found" : "NOT found");
-    } else {
-        log_line("sound: ProjectDiablo.dll is not loaded");
-    }
+
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQuery(module, &mbi, sizeof(mbi))) {
         self_start = (const BYTE *)mbi.AllocationBase;
