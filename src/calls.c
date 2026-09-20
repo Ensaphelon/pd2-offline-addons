@@ -24,6 +24,12 @@ static void **slots[MAX_HOOKS];
 static int hook_count;
 static BYTE *thunks;
 
+/* Which call was the last one of the frame. Counting said which ordinals are frame boundaries;
+   this says which of them comes last, and that is where something drawn over the world belongs.
+   A full ordering would need real logic inside a hand-assembled thunk; "the most recent one"
+   needs one more instruction, and the frame hook reads it at exactly the right moment. */
+static volatile LONG last_index = -1;
+
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
 static void write_thunk(BYTE *at, int index, volatile LONG *counter, void **original)
@@ -34,11 +40,6 @@ static void write_thunk(BYTE *at, int index, volatile LONG *counter, void **orig
     at[16] = 0xFF; at[17] = 0x25; memcpy(at + 18, &original, 4);
 }
 
-/* Which call was the last one of the frame. Counting said which ordinals are frame boundaries;
-   this says which of them comes last, and that is where something drawn over the world belongs.
-   A full ordering would need real logic inside a hand-assembled thunk; "the most recent one"
-   needs one more instruction, and the frame hook reads it at exactly the right moment. */
-static volatile LONG last_index = -1;
 
 static void **redirect_ordinal(HMODULE module, const char *dll, WORD ordinal, void *with,
                                void **out_original)
