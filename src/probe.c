@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
+#include <ctype.h>
 #include "log.h"
 
 /* A read-only look at what the running game holds about an item we already know everything about.
@@ -455,17 +456,21 @@ static void find_player_and_its_slot(void)
                     const DWORD *w = (const DWORD *)(chunk + offset);
                     if (w[0] != 0 || w[3] != 1) continue;              /* dwType, dwUnitId */
                     if (w[1] > 7) continue;                            /* class, 0..6 */
-                    DWORD first = 0;
-                    if (!safe_read((const void *)(UINT_PTR)w[5], &first, 4)) continue;
+                    /* A name at the start of PlayerData is the proof. The first candidate this
+                       ever found had an empty one — dwType 0 with dwUnitId 1 is a common enough
+                       pair of zeros-and-ones to hit by accident, so a candidate is only accepted
+                       once it can produce a real character name. */
+                    char name[17] = {0};
+                    if (!safe_read((const void *)(UINT_PTR)w[5], name, 16)) continue;
+                    name[16] = 0;
+                    if (!isalpha((unsigned char)name[0])) continue;
+                    int plausible = 1;
+                    for (int c = 0; c < 15 && name[c]; c++)
+                        if (name[c] < 32 || name[c] > 126) { plausible = 0; break; }
+                    if (!plausible) continue;
                     player = (DWORD)(UINT_PTR)(base + done + offset);
-                    log_line("  candidate %08X: class=%lu pPlayerData=%08X",
-                             player, (unsigned long)w[1], w[5]);
-                    /* The name sits at the start of PlayerData — proof, not a guess. */
-                    char name[20] = {0};
-                    if (safe_read((const void *)(UINT_PTR)w[5], name, 16)) {
-                        name[16] = 0;
-                        log_line("  its PlayerData begins: \"%s\"", name);
-                    }
+                    log_line("  player %08X: class=%lu pPlayerData=%08X name=\"%s\"",
+                             player, (unsigned long)w[1], w[5], name);
                     break;
                 }
             }
