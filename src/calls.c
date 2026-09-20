@@ -253,24 +253,41 @@ void calls_draw_test_box(void)
         log_line("draw: D2gfx #10014 DrawRectangle at %p", (void *)draw);
         if (!draw) return;
     }
-    /* A spot in the world, chosen once: wherever the player was standing the first time this
-       ran. It should stay put on the ground from then on. */
-    static int anchor_x, anchor_y, anchored;
+    /* A shaft over every unique or set item lying on the ground. Built out of stacked bands
+       rather than one block: each is drawn with a blend, so the overlap makes the bottom bright
+       and the top faint, which is what a beam of light does. Nothing is loaded and nothing is
+       animated — this is the game's own rectangle, six times. */
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
-    if (!anchored) {
-        get_player_fn get_player = (get_player_fn)((const BYTE *)client + OFF_GETPLAYERUNIT);
-        get_coord_fn get_x = (get_coord_fn)((const BYTE *)client + OFF_GETUNITX);
-        get_coord_fn get_y = (get_coord_fn)((const BYTE *)client + OFF_GETUNITY);
-        void *player = get_player();
-        if (!player) return;
-        anchor_x = get_x(player); anchor_y = get_y(player);
-        anchored = 1;
-        log_line("draw: anchored to world (%d, %d) — the box should stay there", anchor_x, anchor_y);
+    const BYTE *row = (const BYTE *)client + 0x10A608 + 4 * (128 * 4);
+    get_coord_fn get_x = (get_coord_fn)((const BYTE *)client + OFF_GETUNITX);
+    get_coord_fn get_y = (get_coord_fn)((const BYTE *)client + OFF_GETUNITY);
+
+    for (int bucket = 0; bucket < 128; bucket++) {
+        DWORD address = *(const DWORD *)(row + bucket * 4);
+        int depth = 0;
+        while (address && depth++ < 64) {
+            const DWORD *unit = (const DWORD *)(UINT_PTR)address;
+            if (unit[0] != 4) break;              /* dwType: item */
+            DWORD mode = unit[4];                 /* dwMode: 3 is lying on the ground */
+            DWORD item_data = unit[5];
+            if (mode == 3 && item_data) {
+                DWORD quality = *(const DWORD *)(UINT_PTR)item_data;
+                if (quality == 5 || quality == 7) {   /* set, unique */
+                    int wx = get_x((void *)unit), wy = get_y((void *)unit);
+                    int sx, sy;
+                    if (world_to_screen(wx, wy, &sx, &sy)) {
+                        for (int band = 0; band < 6; band++) {
+                            int top = sy - 30 - band * 22;
+                            int half = 11 - band;
+                            draw(sx - half, top, sx + half, top + 24, 0x9A, 5);
+                        }
+                    }
+                }
+            }
+            address = unit[0x3B];                 /* +0xEC, the next in this bucket */
+        }
     }
-    int sx, sy;
-    if (!world_to_screen(anchor_x, anchor_y, &sx, &sy)) return;
-    draw(sx - 20, sy - 60, sx + 20, sy, 0x9A, 5);
 }
 
 /* ---------------------------------------------------------------------------------------- */
