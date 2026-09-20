@@ -61,6 +61,58 @@ static void draw_test_line(void)
     gr_draw_line(&top, &bottom);
 }
 
+/* Drawing a line through Glide asks D2GL to agree with us about vertex layout and render state,
+   and the first attempt produced nothing at all. Writing pixels into the back buffer asks it for
+   none of that — lock, poke, unlock. D2GL implements the calls (checked: real code, not stubs),
+   and if this shows up while the line does not, the problem was state rather than the hook. */
+typedef int (__stdcall *gr_lfb_lock_fn)(unsigned long, unsigned long, unsigned long,
+                                        unsigned long, int, void *);
+typedef int (__stdcall *gr_lfb_unlock_fn)(unsigned long, unsigned long);
+static gr_lfb_lock_fn gr_lfb_lock;
+static gr_lfb_unlock_fn gr_lfb_unlock;
+
+typedef struct {
+    unsigned long size;
+    void *ptr;
+    unsigned long stride;
+    unsigned long write_mode;
+    unsigned long origin;
+} lfb_info;
+
+#define GR_LFB_WRITE_ONLY      1
+#define GR_BUFFER_BACKBUFFER   1
+#define GR_LFBWRITEMODE_ANY    0xFF
+#define GR_ORIGIN_UPPER_LEFT   0
+
+static void draw_test_pixels(void)
+{
+    if (!gr_lfb_lock || !gr_lfb_unlock) return;
+    lfb_info info;
+    memset(&info, 0, sizeof(info));
+    info.size = sizeof(info);
+    if (!gr_lfb_lock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_ANY,
+                     GR_ORIGIN_UPPER_LEFT, 0, &info)) {
+        static int said;
+        if (!said) { said = 1; log_line("frame: grLfbLock refused"); }
+        return;
+    }
+    static int described;
+    if (!described) {
+        described = 1;
+        log_line("frame: lfb ptr=%p stride=%lu writeMode=%lu origin=%lu",
+                 info.ptr, info.stride, info.write_mode, info.origin);
+    }
+    if (info.ptr && info.stride) {
+        /* A fat vertical bar near the left edge, in whatever the pixel format turns out to be —
+           all-bits-set is white or near-white in every one of them, which is enough to see. */
+        for (int y = 60; y < 360; y++) {
+            BYTE *row = (BYTE *)info.ptr + (size_t)y * info.stride;
+            memset(row + 40, 0xFF, 16);
+        }
+    }
+    gr_lfb_unlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER);
+}
+
 static void resolve_glide(void)
 {
     if (gr_draw_line) return;
@@ -70,6 +122,8 @@ static void resolve_glide(void)
     gr_constant_colour = (gr_constant_colour_fn)GetProcAddress(glide, "_grConstantColorValue@4");
     gr_colour_combine = (gr_colour_combine_fn)GetProcAddress(glide, "_grColorCombine@20");
     gr_alpha_blend = (gr_alpha_blend_fn)GetProcAddress(glide, "_grAlphaBlendFunction@16");
+    gr_lfb_lock = (gr_lfb_lock_fn)GetProcAddress(glide, "_grLfbLock@24");
+    gr_lfb_unlock = (gr_lfb_unlock_fn)GetProcAddress(glide, "_grLfbUnlock@8");
     log_line("frame: glide draw entry points %s",
              (gr_draw_line && gr_constant_colour && gr_colour_combine && gr_alpha_blend)
              ? "all found" : "INCOMPLETE");
@@ -100,6 +154,7 @@ static void __stdcall our_swap(int interval)
     frame_tick();
     resolve_glide();
     draw_test_line();
+    draw_test_pixels();
     if (original_swap) original_swap(interval);
 }
 
