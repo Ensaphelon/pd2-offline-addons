@@ -142,7 +142,15 @@ drawn from it unless the first cell reports the size we put in, and `test 1` dra
 a fixed spot on screen so a bad draw falls over on the way into the game rather than over a rare
 item.
 
-Neither call was the right one. `#10041` returns without putting anything on the screen, so the
+**The CellContext is bigger than BH and d2bs say.** D2Cmp's cell lookup, at `D2CMP+0x122E0` —
+the function whose assertion halts the game with `Unrecoverable internal error 6fe2232e` —
+accepts a context only if the cell file at `+0x34` is there and says version 6, the DIRECTION at
+**`+0x40`** is under 64, and the frame number at `+0x00` is within the file's cell count. Both
+public headers describe the structure as ending at `+0x38`, so that direction falls off the end
+of it and reads whatever was on the stack. That is the halt, and it is also why the first
+attempt took the game down on the first drop rather than at a coordinate, as was suspected.
+
+Neither of the first two calls was tried with a large enough context. `#10041` returns without putting anything on the screen, so the
 guessing stopped: the thunks now hand over the caller's argument pointer as well as its index,
 and for a few dozen frames every hooked call whose first argument is a CellContext — a pointer
 whose +0x34 leads to a cell file whose first cell has a sensible size — is logged with all six

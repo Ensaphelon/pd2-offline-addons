@@ -15,10 +15,12 @@
  *   D2Cmp #10006  InitCellFile(buffer, &out, source, line, version, name)
  *   D2Gfx #10041  DrawAutomapCell2(context, x, y, bright2, bright, colour table)
  *
- * #10019 DrawCellContextEx was tried first and took the game down the moment something was
- * dropped. #10041 is the one d2bs actually ships an image through, arguments and all, and its
- * colour table is the difference: a 256-byte identity table rather than a bare zero where a
- * pointer belongs.
+ * The CellContext is bigger than BH and d2bs describe it. D2Cmp's own cell lookup — the function
+ * whose assertion the game halts on, at D2CMP+0x122E0 — reads four things and refuses anything
+ * else: the cell file at +0x34, its version, which must be 6, a DIRECTION at +0x40, which must be
+ * under 64, and the frame number at +0x00, which must not exceed the file's cell count. A context
+ * declared as 0x38 bytes leaves that direction off the end of it, reading whatever the stack
+ * happened to hold — and a number over 64 there is the halt.
  *
  * Both from SlashDiablo Maphack's D2Ptrs.h (AGPL, so published), and the CellContext shape —
  * frame number at +0x00, the CellFile at +0x34 — from its CommonStructs.h. */
@@ -205,6 +207,14 @@ static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned i
                  name, (unsigned long)first);
         return NULL;
     }
+    DWORD version = 0, count = 0;
+    safe_read(cells, &version, 4);
+    safe_read((const BYTE *)cells + 0x14, &count, 4);
+    if (version != 6 || count < 1) {
+        log_line("beam: %s reads as version %lu with %lu cells — D2Cmp wants version 6",
+                 name, (unsigned long)version, (unsigned long)count);
+        return NULL;
+    }
     if ((int)cell.width != width || (int)cell.height != height) {
         log_line("beam: %s came back %lux%lu, expected %dx%d — not drawing it",
                  name, (unsigned long)cell.width, (unsigned long)cell.height, width, height);
@@ -246,17 +256,23 @@ static int resolve(void)
     return cells_beam != NULL || cells_jet != NULL;
 }
 
+#define CTX_CELL 0      /* the frame to draw */
+#define CTX_FILE 13     /* +0x34, the cell file */
+#define CTX_DIR 16      /* +0x40, the direction — off the end of a 0x38-byte context */
+
 static void draw_sprite(void *cells, int frame, int x, int y)
 {
-    /* CellContext: the frame number at the front, the CellFile at +0x34, zero in between. */
-    DWORD context[14];
+    /* Generous and entirely zeroed: the fields D2Cmp checks are all happy at zero, and the ones
+       nobody has named are better zero than whatever was on the stack. */
+    DWORD context[64];
     if (!cells) return;
     /* A coordinate the transform got wrong is the likeliest way to take the game down from here:
        a rectangle at an absurd place is simply clipped, a sprite is not. */
     if (x < -4096 || x > 8192 || y < -4096 || y > 8192) return;
     memset(context, 0, sizeof(context));
-    context[0] = (DWORD)frame;
-    context[13] = (DWORD)(UINT_PTR)cells;
+    context[CTX_CELL] = (DWORD)frame;
+    context[CTX_FILE] = (DWORD)(UINT_PTR)cells;
+    context[CTX_DIR] = 0;
     draw_cell(context, x, y, cfg.bright, cfg.trans, cfg.colour);
 }
 
