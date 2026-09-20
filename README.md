@@ -222,8 +222,14 @@ TOLD is which bases can still produce something the collection lacks: a Shako li
 unique made on a Shako is missing, and stops when none is. The exact answer still arrives later,
 when the item is identified.
 
-pd2-holy-inventory writes that list into `grail-wanted.txt` beside this DLL after every scan, one
-`type <number>` per line, and the plugin re-reads it while the game runs. No file at all means
+It can also read the item's QUALITY, and that pair is worth far more than the base alone: a
+Splint Mail makes both the set Berserker's Hauberk and the unique Iceblink, so owning the set is
+no reason to light a set item, nor any reason to stop lighting a unique one. The list is
+therefore per base AND kind — `unique <number>` or `set <number>` — which on one real collection
+is 237 unique pairs and 60 set ones where merging them gave 257 bases and lit both.
+
+pd2-holy-inventory writes it into `grail-wanted.txt` beside this DLL after every scan, and the
+plugin re-reads it while the game runs. No file at all means
 every unique and set is lit, which is what this did before the list existed; `wanted 0` says the
 same on purpose.
 

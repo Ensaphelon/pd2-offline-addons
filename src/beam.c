@@ -118,24 +118,29 @@ static FILETIME config_stamp;
 
 /* Which bases are still worth a light.
  *
- * The plugin cannot tell whether a ground item finishes the Holy Grail: the client's copy of it
- * carries no unique or set id — that is on the server-side unit — so all it can read is
- * dwTxtFileNo, the base. pd2-holy-inventory writes the bases that can still produce something
- * missing into grail-wanted.txt beside this DLL, one `type <number>` per line, and rewrites it
- * after every scan. With no file at all, everything unique or set is lit, which is what this did
- * before the list existed. */
+ * The plugin cannot tell WHICH unique or set a ground item is: the client's copy carries no
+ * identity, that is on the server-side unit. But it can read two things — the base, from
+ * dwTxtFileNo, and the quality — and the pair is worth much more than the base alone. A Splint
+ * Mail makes both the set Berserker's Hauberk and the unique Iceblink; owning the set is no
+ * reason to light a set item, and no reason to stop lighting a unique one.
+ *
+ * So pd2-holy-inventory writes grail-wanted.txt beside this DLL with a line per pair — `unique
+ * <number>` or `set <number>` — and rewrites it after every scan. No file at all means light
+ * everything, which is what this did before the list existed. */
 #define WANTED_MAX 8192
 
-static BYTE wanted[WANTED_MAX / 8];
+static BYTE wanted_unique[WANTED_MAX / 8];
+static BYTE wanted_set[WANTED_MAX / 8];
 static int wanted_count;
 static char wanted_path[MAX_PATH];
 static FILETIME wanted_stamp;
 
-static int wanted_has(DWORD type_no)
+static int wanted_has(DWORD type_no, DWORD quality)
 {
+    const BYTE *which = (quality == 7) ? wanted_unique : wanted_set;
     if (!wanted_count) return 1;              /* no list: everything is a candidate */
     if (type_no >= WANTED_MAX) return 1;      /* beyond anything the app can name: do not hide it */
-    return (wanted[type_no >> 3] >> (type_no & 7)) & 1;
+    return (which[type_no >> 3] >> (type_no & 7)) & 1;
 }
 
 static void wanted_reload(void)
@@ -148,7 +153,8 @@ static void wanted_reload(void)
     if (!wanted_path[0]) return;
     if (!GetFileAttributesExA(wanted_path, GetFileExInfoStandard, &info)) {
         if (wanted_count) {
-            memset(wanted, 0, sizeof(wanted));
+            memset(wanted_unique, 0, sizeof(wanted_unique));
+            memset(wanted_set, 0, sizeof(wanted_set));
             wanted_count = 0;
             log_line("grail: grail-wanted.txt is gone — lighting every unique and set again");
         }
@@ -159,18 +165,23 @@ static void wanted_reload(void)
 
     f = fopen(wanted_path, "r");
     if (!f) return;
-    memset(wanted, 0, sizeof(wanted));
+    memset(wanted_unique, 0, sizeof(wanted_unique));
+    memset(wanted_set, 0, sizeof(wanted_set));
     while (fgets(line, sizeof(line), f)) {
-        /* %d, not %i: %i reads a leading zero as octal, and a list of numbers written
-           by another program is not the place to inherit that. */
-        if (sscanf(line, "type %d", &number) != 1) continue;
+        /* %d, not %i: %i reads a leading zero as octal, and a list of numbers written by
+           another program is not the place to inherit that. */
+        BYTE *which = NULL;
+        if (sscanf(line, "unique %d", &number) == 1) which = wanted_unique;
+        else if (sscanf(line, "set %d", &number) == 1) which = wanted_set;
+        else continue;
         if (number < 0 || number >= WANTED_MAX) continue;
-        wanted[number >> 3] |= (BYTE)(1 << (number & 7));
+        which[number >> 3] |= (BYTE)(1 << (number & 7));
         found++;
     }
     fclose(f);
     wanted_count = found;
-    log_line("grail: %d base(s) can still finish the grail, read from grail-wanted.txt", found);
+    log_line("grail: %d base-and-quality pair(s) can still finish it, from grail-wanted.txt",
+             found);
 }
 
 void beam_init(void *module)
@@ -912,7 +923,8 @@ void beam_draw(void)
                 if (quality == 5 || quality == 7) {   /* set, unique */
                     const char *why = NULL;
                     if (held_has(id)) why = "the player has held this one";
-                    else if (cfg.wanted && !wanted_has(type_no)) why = "nothing missing on this base";
+                    else if (cfg.wanted && !wanted_has(type_no, quality))
+                        why = "nothing of this quality missing on this base";
                     say_once(id, type_no, quality, why);
                     if (!why)
                         draw_over(base, unit, get_x((void *)unit), get_y((void *)unit), tick);
