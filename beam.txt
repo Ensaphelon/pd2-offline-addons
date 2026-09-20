@@ -1,13 +1,14 @@
 # The light over a drop. Re-read while the game runs — save this file and the next frame uses it.
 
 art     beam      # beam (the Horadric shaft), jet (rays fanning out of the ground), or both
-trans   5         # the draw's brightness argument; d2bs passes 5 for a blended image
-bright  -1        # its other one
-draw    10041     # which D2Gfx call does the drawing
+trans   5         # the draw's blend; the game itself passes 5 here
+bright  -1        # its light argument; the game passes -1
+draw    10019     # which D2Gfx call does the drawing
 rate    3         # game frames per sprite frame — lower is faster
 dx      0         # nudge right
 dy      0         # nudge down
-anchor  offset    # offset (follows the view, including when a panel slides it) or player
+anchor  player    # player (proven) or offset (follows the view when a panel slides it)
 on      1
 test    1         # draw one at a fixed spot near the left edge, to judge the art safely
 capture 40        # frames to watch the game's own drawing calls for; set again to look afresh
+colour  0         # its last argument, a small number — the game passes 0 or 1

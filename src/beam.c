@@ -25,11 +25,13 @@
 
 typedef void(__stdcall *init_cell_fn)(void *file, void **out, const char *source, DWORD line,
                                       DWORD version, const char *name);
-/* D2Gfx #10041, the call d2bs uses to put an image of its own on the screen:
-   (context, x, y, bright2, bright, colour table). The table is 256 bytes and identity leaves the
-   art its own colours. Its two brightness arguments are what d2bs passes as -1 and 5. */
-typedef void(__stdcall *draw_cell_fn)(void *context, int x, int y, int bright2, int bright,
-                                      const BYTE *table);
+/* D2Gfx #10019, with the arguments read off the game itself: it draws a 48x48 cell, frame two of
+   its cell file, with (context, 117, 600, -1, 5, 1). So the last argument is a small number and
+   not a pointer — which is what a 256-byte colour table in that slot got wrong — and the y it is
+   given is the BOTTOM of the sprite, since a cell 80 high is drawn at y 600 on a 600-high
+   screen. */
+typedef void(__stdcall *draw_cell_fn)(void *context, int x, int y, int light, int trans,
+                                      int colour);
 typedef void *(__stdcall *get_player_fn)(void);
 typedef int(__fastcall *get_coord_fn)(void *unit);
 
@@ -64,17 +66,21 @@ static struct {
     int trans;    /* the draw's second brightness argument; d2bs passes 5 */
     int bright;   /* its first; d2bs passes -1 */
     int ordinal;  /* which D2Gfx call does the drawing */
+    int colour;   /* the draw's last argument; the game passes small numbers here */
     int rate;     /* game frames per sprite frame */
     int dx, dy;   /* nudge, in pixels */
-    int anchor;   /* 0 the view offset, 1 relative to the player */
+    int anchor;   /* 0 the view offset, 1 relative to the player — the proven one, and the
+                     default until the report below says the other is sound, because a sprite
+                     drawn at a coordinate a transform got wrong is how the game went down */
     int test;     /* draw one at a fixed spot on screen, so the art can be judged and the draw
                      proved safe without anything having to be dropped first */
     int capture;  /* frames to watch the game's own calls for, looking for the one that draws
                      a cell — set it again to take another look without restarting */
     int on;
-} cfg = {0, 5, -1, 10041, 3, 0, 0, 0, 1, 40, 1};
+} cfg = {0, 5, -1, 10019, 0, 3, 0, 0, 1, 1, 40, 1};
 
 static void capture_arm(void);
+static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y);
 
 static char config_path[MAX_PATH];
 static FILETIME config_stamp;
@@ -113,6 +119,7 @@ void beam_reload(void)
         if (sscanf(line, "trans %i", &value) == 1) { cfg.trans = value; continue; }
         if (sscanf(line, "bright %i", &value) == 1) { cfg.bright = value; continue; }
         if (sscanf(line, "draw %i", &value) == 1) { cfg.ordinal = value; continue; }
+        if (sscanf(line, "colour %i", &value) == 1) { cfg.colour = value; continue; }
         if (sscanf(line, "rate %i", &value) == 1) { cfg.rate = value > 0 ? value : 1; continue; }
         if (sscanf(line, "dx %i", &value) == 1) { cfg.dx = value; continue; }
         if (sscanf(line, "dy %i", &value) == 1) { cfg.dy = value; continue; }
@@ -121,9 +128,9 @@ void beam_reload(void)
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
-    log_line("beam: art=%d draw=#%d trans=%d bright=%d rate=%d dx=%d dy=%d anchor=%d test=%d "
-             "capture=%d on=%d", cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.rate, cfg.dx,
-             cfg.dy, cfg.anchor, cfg.test, cfg.capture, cfg.on);
+    log_line("beam: art=%d draw=#%d trans=%d bright=%d colour=%d rate=%d dx=%d dy=%d anchor=%d "
+             "test=%d capture=%d on=%d", cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.colour,
+             cfg.rate, cfg.dx, cfg.dy, cfg.anchor, cfg.test, cfg.capture, cfg.on);
 }
 
 /* One CellFile per sprite, built the first time it is wanted. The buffer has to stay: InitCellFile
@@ -241,19 +248,16 @@ static int resolve(void)
 
 static void draw_sprite(void *cells, int frame, int x, int y)
 {
-    /* Identity, so every palette index comes out as itself and the art keeps its own colours.
-       d2bs keeps two of these and alternates because the renderer caches the pointer; nothing
-       here ever changes the table, so one is enough. */
-    static BYTE table[256];
-    if (!table[1]) for (int i = 0; i < 256; i++) table[i] = (BYTE)i;
-
     /* CellContext: the frame number at the front, the CellFile at +0x34, zero in between. */
     DWORD context[14];
     if (!cells) return;
+    /* A coordinate the transform got wrong is the likeliest way to take the game down from here:
+       a rectangle at an absurd place is simply clipped, a sprite is not. */
+    if (x < -4096 || x > 8192 || y < -4096 || y > 8192) return;
     memset(context, 0, sizeof(context));
     context[0] = (DWORD)frame;
     context[13] = (DWORD)(UINT_PTR)cells;
-    draw_cell(context, x, y, cfg.bright, cfg.trans, table);
+    draw_cell(context, x, y, cfg.bright, cfg.trans, cfg.colour);
 }
 
 /* World to screen.
@@ -290,17 +294,46 @@ static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_
     return 1;
 }
 
-/* x, y is where the light stands: the foot of the sprite. The game is given the top-left corner
-   — that is what d2bs subtracts a cell's own offsets from to clip against the screen — so the
-   height comes off the y and half the width off the x. */
+/* x, y is where the light stands: the foot of the sprite. The game is given the bottom edge and
+   the left one, so only half a width comes off the x. */
 static void draw_foot_at(int x, int y, int tick)
 {
     if (cfg.art == 1 || cfg.art == 2)
-        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames,
-                    x - art_jet_width / 2, y - art_jet_height);
+        draw_sprite(cells_jet, (tick / cfg.rate) % art_jet_frames, x - art_jet_width / 2, y);
     if (cfg.art == 0 || cfg.art == 2)
-        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames,
-                    x - art_beam_width / 2, y - art_beam_height);
+        draw_sprite(cells_beam, (tick / cfg.rate) % art_beam_frames, x - art_beam_width / 2, y);
+}
+
+/* Both transforms, for the player, once — whose own place on screen is known: near the middle
+   when nothing is open. The view-offset one has never been checked, and a coordinate it got
+   badly wrong is the best explanation left for the game going down the first time a sprite was
+   drawn over a real item. */
+static void report_transform(const BYTE *base)
+{
+    static int said;
+    if (said) return;
+    said = 1;
+
+    get_player_fn get_player = (get_player_fn)(base + OFF_GETPLAYERUNIT);
+    void *player = get_player();
+    if (!player) { said = 0; return; }
+    get_coord_fn get_x = (get_coord_fn)(base + OFF_GETUNITX);
+    get_coord_fn get_y = (get_coord_fn)(base + OFF_GETUNITY);
+    int px = get_x(player), py = get_y(player);
+    const LONG *offset = (const LONG *)(base + OFF_VIEW_OFFSET);
+    int divisor = *(const int *)(base + OFF_VIEW_DIVISOR);
+    DWORD width = *(const DWORD *)(base + OFF_SCREENSIZEX);
+    DWORD height = *(const DWORD *)(base + OFF_SCREENSIZEY);
+    int ox = 0, oy = 0, ax = 0, ay = 0;
+    int was = cfg.anchor;
+    cfg.anchor = 0; world_to_screen(base, px, py, &ox, &oy);
+    cfg.anchor = 1; world_to_screen(base, px, py, &ax, &ay);
+    cfg.anchor = was;
+
+    log_line("beam: screen %lux%lu, player world %d,%d — view offset says %d,%d; "
+             "half the screen says %d,%d; raw offset %ld,%ld divisor %d",
+             (unsigned long)width, (unsigned long)height, px, py, ox, oy, ax, ay,
+             (long)offset[0], (long)offset[1], divisor);
 }
 
 static void draw_over(const BYTE *base, int world_x, int world_y, int tick)
@@ -320,6 +353,7 @@ void beam_draw(void)
     if (!client) return;
     tick++;
     if (tick == 1) capture_arm();
+    report_transform((const BYTE *)client);
     if (capture_left > 0 && !--capture_left) log_line("capture: done looking");
 
     /* Once, at a fixed spot near the left edge, before any item is involved: if the game is
