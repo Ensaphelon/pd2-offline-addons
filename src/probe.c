@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 #include "log.h"
 
 /* A read-only look at what the running game holds about an item we already know everything about.
@@ -29,6 +30,10 @@ typedef struct {
 
 static probe_target targets[MAX_TARGETS];
 static int target_count;
+/* Our own module's address range. The first pass found the probe's own target labels and dumped
+   them as if they were game data — a value we are hunting for is, by construction, also sitting
+   in the config we loaded it from. */
+static const BYTE *self_start, *self_end;
 
 /* The values to hunt live in a file beside the DLL rather than in the build, so a new experiment
    is a text edit rather than a recompile — and so this repository never carries anybody's real
@@ -85,15 +90,11 @@ static void describe(const BYTE *address, char *out, size_t out_size)
     snprintf(out, out_size, "heap");
 }
 
-static void dump_around(const BYTE *hit, const probe_target *target)
+/* Prints `count` bytes from `at`, offsets relative to `origin`, or says why it could not. */
+static void dump_range(const BYTE *at, const BYTE *origin, int count)
 {
-    char where[128];
-    describe(hit, where, sizeof(where));
-    log_line("  hit %p  (%s)", (void *)hit, where);
-
-    const BYTE *start = hit - WINDOW_BEFORE;
-    for (int row = 0; row < (WINDOW_BEFORE + WINDOW_AFTER) / 16; row++) {
-        const BYTE *line = start + row * 16;
+    for (int row = 0; row < count / 16; row++) {
+        const BYTE *line = at + row * 16;
         if (IsBadReadPtr(line, 16)) continue;
         DWORD w[4];
         memcpy(w, line, sizeof(w));
@@ -102,11 +103,43 @@ static void dump_around(const BYTE *hit, const probe_target *target)
             BYTE ch = line[i];
             ascii[i] = (ch >= 32 && ch < 127) ? (char)ch : '.';
         }
-        /* The offset is relative to the hit, so a field two dwords before the guid reads as
-           -0x08 rather than as an absolute address nobody can compare between runs. */
         log_line("    %+05d  %08X %08X %08X %08X  |%s|",
-                 (int)(line - hit), w[0], w[1], w[2], w[3], ascii);
+                 (int)(line - origin), w[0], w[1], w[2], w[3], ascii);
     }
+}
+
+/* An item's guid sits at UnitAny+0x20 — established from this probe's own first pass, where every
+   hit had dwType == 4 thirty-two bytes back and a pointer eight dwords in. That pointer is
+   pItemData, and it is where the identity we are actually after lives. Following it is the whole
+   reason for a second pass: the first one could see the item but not what the item IS. */
+#define GUID_TO_UNIT       0x20
+#define UNIT_TO_ITEMDATA   0x14
+
+static void follow_item_data(const BYTE *hit)
+{
+    const BYTE *unit = hit - GUID_TO_UNIT;
+    const BYTE *slot = unit + UNIT_TO_ITEMDATA;
+    if (IsBadReadPtr(slot, 4)) return;
+    const BYTE *item_data = (const BYTE *)(*(const DWORD *)slot);
+    /* A plausible heap pointer, not a small integer that happens to sit there. */
+    if ((DWORD)(UINT_PTR)item_data < 0x10000 || IsBadReadPtr(item_data, 0x40)) {
+        log_line("    -> pItemData %p is not readable", (void *)item_data);
+        return;
+    }
+    log_line("    -> pItemData %p (offsets below are from ITS start)", (void *)item_data);
+    dump_range(item_data, item_data, 0xB0);
+}
+
+static void dump_around(const BYTE *hit, const probe_target *target)
+{
+    char where[128];
+    describe(hit, where, sizeof(where));
+    log_line("  hit %p  (%s)", (void *)hit, where);
+
+    /* Offsets are relative to the hit, so a field two dwords before the guid reads as -0x08
+       rather than as an absolute address nobody can compare between runs. */
+    dump_range(hit - WINDOW_BEFORE, hit, WINDOW_BEFORE + WINDOW_AFTER);
+    follow_item_data(hit);
     (void)target;
 }
 
@@ -134,6 +167,7 @@ static void scan_for(const probe_target *target)
             for (SIZE_T offset = 0; offset + 4 <= size; offset += 4) {
                 const BYTE *at = base + offset;
                 if (*(const DWORD *)at != target->value) continue;
+                if (at >= self_start && at < self_end) continue;   /* our own config strings */
                 dump_around(at, target);
                 if (++hits >= MAX_HITS_PER_TARGET) {
                     log_line("  (stopping at %d hits)", hits);
@@ -162,5 +196,10 @@ void probe_run(void)
 
 void probe_init(void *module)
 {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(module, &mbi, sizeof(mbi))) {
+        self_start = (const BYTE *)mbi.AllocationBase;
+        self_end = self_start + 0x100000;   /* generous: the whole image, never game memory */
+    }
     load_targets(module);
 }
