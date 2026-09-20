@@ -72,7 +72,9 @@ typedef int(__fastcall *get_offset_fn)(void);
    runs, so trying another blend or nudging the sprite is a text edit and not a rebuild. */
 static struct {
     int art;      /* 0 beam, 1 jet, 2 both */
-    int trans;    /* the draw's second brightness argument; d2bs passes 5 */
+    int trans;    /* the blend. All eight were drawn side by side over grass: 0 is nearly
+                     invisible, 3 glows and lets the ground through, 5 is the flat opaque one
+                     the game uses for its own panels, and the rest are slabs. Light wants 3. */
     int bright;   /* its first; d2bs passes -1 */
     int ordinal;  /* which D2Gfx call does the drawing */
     int colour;   /* the draw's last argument; the game passes small numbers here */
@@ -86,7 +88,7 @@ static struct {
     int capture;  /* frames to watch the game's own calls for, looking for the one that draws
                      a cell — set it again to take another look without restarting */
     int on;
-} cfg = {0, 5, -1, 10019, 0, 3, 0, 0, 0, 2, 0, 1};
+} cfg = {0, 3, -1, 10019, 0, 4, 0, 0, 0, 0, 0, 1};
 
 static void capture_arm(void);
 static int world_to_screen(const BYTE *base, int world_x, int world_y, int *out_x, int *out_y);

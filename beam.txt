@@ -1,14 +1,14 @@
 # The light over a drop. Re-read while the game runs — save this file and the next frame uses it.
 
 art     beam      # beam (the Horadric shaft), jet (rays fanning out of the ground), or both
-trans   5         # the draw's blend; the game itself passes 5 here
+trans   3         # the blend: 3 glows and lets the ground through, 5 is a flat slab
 bright  -1        # its light argument; the game passes -1
 draw    10019     # which D2Gfx call does the drawing
-rate    3         # game frames per sprite frame — lower is faster
+rate    4         # game frames per sprite frame — lower is faster
 dx      0         # nudge right
 dy      0         # nudge down
 anchor  mouse     # mouse (follows the view when a panel slides it) or player
 on      1
-test    2         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
+test    0         # 1 one sprite at a fixed spot, 2 a row of every blend, left to right 0..7
 capture 0         # frames to watch the game's own drawing calls for; set again to look afresh
 colour  0         # its last argument, a small number — the game passes 0 or 1

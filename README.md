@@ -169,5 +169,11 @@ whose +0x34 leads to a cell file whose first cell has a sensible size — is log
 of its real arguments. The game makes hundreds of these calls a frame; one of them is the one
 that draws a sprite, and it will be reading its own arguments out that says which.
 
+**The blend is 3.** All eight were drawn side by side over grass rather than guessed at one per
+session: 0 is nearly invisible, 3 glows and lets the ground show through, 5 is the flat opaque
+one the game uses for its own panels, and the rest are slabs. The art is 81% near-black — index
+0 is only a fifth of it — so it is made to be added to the background, and anything that lays it
+over the ground shows a black brick. That is what the first look at it was.
+
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.
