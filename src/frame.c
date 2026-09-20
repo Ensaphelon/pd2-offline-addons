@@ -205,6 +205,22 @@ static const char *const GLIDE_CALLERS[] = {
     "D2Glide.dll", "D2Gfx.dll", "D2Direct3D.dll", "D2DDraw.dll", "Game.exe",
 };
 
+/* What the game tells Glide about its own vertices. Our line was built on the guess that x and
+   y sit at the front of the struct; this stops guessing by listening to the call that actually
+   says so. grVertexLayout(param, offset, mode) is issued once per parameter at start-up.
+     0x01 XY   0x02 Z   0x03 W   0x04 A   0x05 RGB   0x10.. texture coords  */
+typedef void (__stdcall *gr_vertex_layout_fn)(unsigned long, long, unsigned long);
+static gr_vertex_layout_fn original_layout;
+static void **layout_slot;
+
+static void __stdcall our_vertex_layout(unsigned long param, long offset, unsigned long mode)
+{
+    static const char *names[] = { "?", "XY", "Z", "W", "A", "RGB" };
+    log_line("layout: param 0x%02lX (%s) at offset %ld, mode %lu",
+             param, param < 6 ? names[param] : "tex/other", offset, mode);
+    if (original_layout) original_layout(param, offset, mode);
+}
+
 BOOL frame_hook_install(void)
 {
     if (hooked_slot) return TRUE;
@@ -233,6 +249,17 @@ BOOL frame_hook_install(void)
     }
     original_swap = (buffer_swap_fn)previous;
     last_report = GetTickCount();
+
+    /* Listen in on the vertex layout too, from the same module. */
+    for (unsigned i = 0; i < sizeof(GLIDE_CALLERS) / sizeof(GLIDE_CALLERS[0]); i++) {
+        HMODULE module = GetModuleHandleA(GLIDE_CALLERS[i]);
+        if (!module) continue;
+        void *was = NULL;
+        layout_slot = redirect_import(module, "glide3x.dll", "_grVertexLayout@12",
+                                      (void *)our_vertex_layout, &was);
+        if (layout_slot) { original_layout = (gr_vertex_layout_fn)was; break; }
+    }
+    log_line("frame: vertex layout %s", layout_slot ? "being listened to" : "not imported by name");
     return TRUE;
 }
 
