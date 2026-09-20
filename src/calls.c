@@ -38,6 +38,8 @@ static volatile LONG last_index = -1;
    itself drew, without anyone having to guess which ordinal that is. */
 static volatile LONG draw_on = -1;
 void beam_draw(void);
+int beam_capturing(void);
+void beam_inspect(int ordinal, const DWORD *args);
 
 /* inc dword ptr [counter]   FF 05 <abs32>
    jmp dword ptr [original]  FF 25 <abs32>  */
@@ -48,27 +50,34 @@ void beam_draw(void);
 
      60              pushad
      9C              pushfd
+     8D 44 24 24     lea eax,[esp+36]    <- the stack as the caller left it: return address,
+     50              push eax               then the arguments
      68 <index>      push index
      E8 <rel32>      call calls_at
-     83 C4 04        add esp,4
+     83 C4 08        add esp,8
      9D              popfd
      61              popad
      FF 05 <counter> inc
-     FF 25 <orig>    jmp                                                                    */
-void __cdecl calls_at(int index);
+     FF 25 <orig>    jmp
+
+   The argument pointer is what settles which D2gfx call actually puts a sprite on screen: the
+   game makes that call hundreds of times a frame, and reading what it passes beats guessing.  */
+void __cdecl calls_at(int index, const DWORD *args);
 
 static void write_draw_thunk(BYTE *at, int index, volatile LONG *counter, void **original)
 {
     int i = 0;
     at[i++] = 0x60;
     at[i++] = 0x9C;
+    at[i++] = 0x8D; at[i++] = 0x44; at[i++] = 0x24; at[i++] = 0x24;
+    at[i++] = 0x50;
     at[i++] = 0x68; memcpy(at + i, &index, 4); i += 4;
     at[i++] = 0xE8;
     {
         LONG rel = (LONG)((BYTE *)calls_at - (at + i + 4));
         memcpy(at + i, &rel, 4); i += 4;
     }
-    at[i++] = 0x83; at[i++] = 0xC4; at[i++] = 0x04;
+    at[i++] = 0x83; at[i++] = 0xC4; at[i++] = 0x08;
     at[i++] = 0x9D;
     at[i++] = 0x61;
     at[i++] = 0xFF; at[i++] = 0x05; memcpy(at + i, &counter, 4); i += 4;
@@ -145,12 +154,14 @@ BOOL calls_watch_install(void)
     int count = collect_ordinals(client, "D2gfx.dll", wanted, MAX_HOOKS);
     if (!count) { log_line("calls: D2Client imports no D2gfx ordinals"); return FALSE; }
 
-    thunks = (BYTE *)VirtualAlloc(NULL, count * 32, MEM_COMMIT | MEM_RESERVE,
+    /* 64 bytes each: the draw thunk is thirty-four and the last time these were allowed to
+       overlap the game crashed on entering it. */
+    thunks = (BYTE *)VirtualAlloc(NULL, count * 64, MEM_COMMIT | MEM_RESERVE,
                                   PAGE_EXECUTE_READWRITE);
     if (!thunks) { log_line("calls: could not allocate thunks"); return FALSE; }
 
     for (int i = 0; i < count; i++) {
-        BYTE *thunk = thunks + i * 32;
+        BYTE *thunk = thunks + i * 64;
         write_draw_thunk(thunk, i, &counts[i], &originals[i]);
         void *previous = NULL;
         void **slot = redirect_ordinal(client, "D2gfx.dll", wanted[i], thunk, &previous);
@@ -199,9 +210,11 @@ void calls_report(DWORD frames)
    Colour is a palette index, not RGB, and transparency 0 is solid while 5 blends. */
 typedef void (__stdcall *gfx_draw6_fn)(int, int, int, int, int, int);
 
-void __cdecl calls_at(int index)
+void __cdecl calls_at(int index, const DWORD *args)
 {
     last_index = index;
+    if (beam_capturing() && index >= 0 && index < hook_count)
+        beam_inspect(ordinals[index], args);
     if (index == draw_on) beam_draw();
 }
 

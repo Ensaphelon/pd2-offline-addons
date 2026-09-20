@@ -69,8 +69,12 @@ static struct {
     int anchor;   /* 0 the view offset, 1 relative to the player */
     int test;     /* draw one at a fixed spot on screen, so the art can be judged and the draw
                      proved safe without anything having to be dropped first */
+    int capture;  /* frames to watch the game's own calls for, looking for the one that draws
+                     a cell — set it again to take another look without restarting */
     int on;
-} cfg = {0, 5, -1, 10041, 3, 0, 0, 0, 1, 1};
+} cfg = {0, 5, -1, 10041, 3, 0, 0, 0, 1, 40, 1};
+
+static void capture_arm(void);
 
 static char config_path[MAX_PATH];
 static FILETIME config_stamp;
@@ -113,16 +117,68 @@ void beam_reload(void)
         if (sscanf(line, "dx %i", &value) == 1) { cfg.dx = value; continue; }
         if (sscanf(line, "dy %i", &value) == 1) { cfg.dy = value; continue; }
         if (sscanf(line, "test %i", &value) == 1) { cfg.test = value; continue; }
+        if (sscanf(line, "capture %i", &value) == 1) { cfg.capture = value; capture_arm(); continue; }
         if (sscanf(line, "on %i", &value) == 1) { cfg.on = value; continue; }
     }
     fclose(f);
-    log_line("beam: art=%d draw=#%d trans=%d bright=%d rate=%d dx=%d dy=%d anchor=%d test=%d on=%d",
-             cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.rate, cfg.dx, cfg.dy,
-             cfg.anchor, cfg.test, cfg.on);
+    log_line("beam: art=%d draw=#%d trans=%d bright=%d rate=%d dx=%d dy=%d anchor=%d test=%d "
+             "capture=%d on=%d", cfg.art, cfg.ordinal, cfg.trans, cfg.bright, cfg.rate, cfg.dx,
+             cfg.dy, cfg.anchor, cfg.test, cfg.capture, cfg.on);
 }
 
 /* One CellFile per sprite, built the first time it is wanted. The buffer has to stay: InitCellFile
    rewrites it in place into the structure the drawing side walks. */
+/* Which D2gfx call actually puts a sprite on the screen.
+ *
+ * Two published candidates were tried by hand: #10019 took the game down on the first drop and
+ * #10041 returned without drawing anything. The game itself makes hundreds of these calls a
+ * frame, so rather than guess a third time, every hooked call is looked at for a short while and
+ * the ones whose first argument is a CellContext — a pointer whose +0x34 leads to a cell file
+ * whose first cell has a sensible width and height — are printed with all six of their real
+ * arguments. That is the call to imitate, and those are the values to imitate it with. */
+static volatile LONG capture_left;
+static BYTE captured[256];
+
+static void capture_arm(void)
+{
+    memset(captured, 0, sizeof(captured));
+    capture_left = cfg.capture;
+}
+
+int beam_capturing(void)
+{
+    return capture_left > 0;
+}
+
+void beam_inspect(int ordinal, const DWORD *args)
+{
+    int slot = ordinal - 10000;
+    if (capture_left <= 0 || slot < 0 || slot >= 256 || captured[slot]) return;
+
+    DWORD a[6];
+    DWORD context, file, version = 0, first = 0, frame = 0;
+    gfx_cell cell;
+
+    /* args points at the return address the caller pushed; the arguments follow it. */
+    if (!safe_read(args + 1, a, sizeof(a))) return;
+    context = a[0];
+    if (context < 0x10000 || (context & 3)) return;             /* cheap, and rejects almost all */
+    if (!safe_read((const void *)(UINT_PTR)(context + 0x34), &file, 4)) return;
+    if (file < 0x10000 || (file & 3)) return;
+    if (!safe_read((const void *)(UINT_PTR)file, &version, 4)) return;
+    if (!safe_read((const void *)(UINT_PTR)(file + 0x18), &first, 4)) return;
+    if (first < 0x10000 || !safe_read((const void *)(UINT_PTR)first, &cell, sizeof(cell))) return;
+    if (cell.width < 1 || cell.width > 4096 || cell.height < 1 || cell.height > 4096) return;
+    safe_read((const void *)(UINT_PTR)context, &frame, 4);
+
+    captured[slot] = 1;
+    log_line("capture: D2gfx #%d(%#lx, %ld, %ld, %#lx, %#lx, %#lx)  cell %lux%lu  frame %lu  "
+             "file version %lu", ordinal, (unsigned long)a[0], (long)a[1], (long)a[2],
+             (unsigned long)a[3], (unsigned long)a[4], (unsigned long)a[5],
+             (unsigned long)cell.width, (unsigned long)cell.height, (unsigned long)frame,
+             (unsigned long)version);
+}
+
 static void *make_cells(init_cell_fn init, const unsigned char *blob, unsigned int size,
                         int width, int height, const char *name)
 {
@@ -263,6 +319,8 @@ void beam_draw(void)
     HMODULE client = GetModuleHandleA("D2Client.dll");
     if (!client) return;
     tick++;
+    if (tick == 1) capture_arm();
+    if (capture_left > 0 && !--capture_left) log_line("capture: done looking");
 
     /* Once, at a fixed spot near the left edge, before any item is involved: if the game is
        going to fall over drawing this it should do it on the way in, not when something rare

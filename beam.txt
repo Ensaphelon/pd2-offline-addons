@@ -10,3 +10,4 @@ dy      0         # nudge down
 anchor  offset    # offset (follows the view, including when a panel slides it) or player
 on      1
 test    1         # draw one at a fixed spot near the left edge, to judge the art safely
+capture 40        # frames to watch the game's own drawing calls for; set again to look afresh

@@ -142,5 +142,12 @@ drawn from it unless the first cell reports the size we put in, and `test 1` dra
 a fixed spot on screen so a bad draw falls over on the way into the game rather than over a rare
 item.
 
+Neither call was the right one. `#10041` returns without putting anything on the screen, so the
+guessing stopped: the thunks now hand over the caller's argument pointer as well as its index,
+and for a few dozen frames every hooked call whose first argument is a CellContext — a pointer
+whose +0x34 leads to a cell file whose first cell has a sensible size — is logged with all six
+of its real arguments. The game makes hundreds of these calls a frame; one of them is the one
+that draws a sprite, and it will be reading its own arguments out that says which.
+
 `beam.txt` sits beside the DLL and is re-read while the game runs, so which art, which blend,
 which speed and where exactly it sits are a text edit and not a rebuild.
