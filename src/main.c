@@ -7,7 +7,6 @@
  * on anything is a deadlock waiting to happen. Same shape as the sibling pd2-holy-grail plugin,
  * which has run in this exact CrossOver/Wine setup for weeks. */
 
-void dps_init(void);
 void dps_tick(void);
 
 static DWORD WINAPI bootstrap(LPVOID module)
@@ -15,14 +14,11 @@ static DWORD WINAPI bootstrap(LPVOID module)
     log_init(module);
     log_line("pd2-dps-meter-offline attached");
 
-    /* D2Client.dll loads after us, so the first attempt usually fails; retry on the tick rather
-     * than sleeping a guessed amount at startup. */
+    /* No init call here on purpose. Game.exe IMPORTS this DLL, so we are loaded before
+     * D2Client.dll exists — the first attempt to find it is guaranteed to fail, and an init that
+     * runs once is therefore an init that never succeeds. dps_tick() does it, and keeps trying
+     * until the module is there. */
     for (;;) {
-        static int initialised;
-        if (!initialised) {
-            dps_init();
-            initialised = 1;
-        }
         dps_tick();
         Sleep(40);
     }

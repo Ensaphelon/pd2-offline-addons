@@ -69,17 +69,21 @@ typedef void *(__stdcall *get_player_unit_fn)(void);
 static get_player_unit_fn get_player_unit;
 static int ready;
 
-void dps_init(void)
+/* Resolve D2Client once it exists. Called from the tick rather than at startup: Game.exe imports
+ * this DLL, so we run BEFORE D2Client.dll is loaded and the first look is always going to come up
+ * empty. Doing this once at startup meant doing it exactly once, unsuccessfully, and then sitting
+ * silent for the whole session — which is precisely what the first in-game run produced. */
+static int ensure_ready(void)
 {
+    if (ready) return 1;
+
     HMODULE client = GetModuleHandleA("D2Client.dll");
-    if (!client) {
-        log_line("D2Client.dll is not loaded yet");
-        return;
-    }
+    if (!client) return 0;              /* not yet; ask again on the next tick */
+
     get_player_unit = (get_player_unit_fn)((BYTE *)client + OFF_GETPLAYERUNIT);
     ready = 1;
-    log_line("attached; D2Client at %p, GetPlayerUnit at %p", (void *)client,
-             (void *)get_player_unit);
+    log_line("D2Client at %p, GetPlayerUnit at %p", (void *)client, (void *)get_player_unit);
+    return 1;
 }
 
 /* The client's PlayerData, or NULL when there is no player in a game right now (menus, loading).
@@ -107,6 +111,8 @@ void dps_tick(void)
 {
     static DWORD last_report;
     static int said_no_player;
+
+    if (!ensure_ready()) return;
 
     BYTE *data = player_data();
     if (!data) {
