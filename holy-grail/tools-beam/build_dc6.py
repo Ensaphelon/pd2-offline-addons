@@ -1,0 +1,148 @@
+"""Turn a DCC overlay out of the game's archive into a DC6 image, as a C array.
+
+The game will not hand us a decoded DCC -- D2Win's loader only knows DC6 -- but D2Cmp's
+InitCellFile happily takes a DC6 that never came from a file, which is how BH shows its own
+images. So we decode the DCC here, once, and ship the frames as a DC6 built in memory.
+"""
+import sys
+from dcc import decode
+from tools import raw_from_mpq
+
+
+def encode_row(row: bytes) -> bytes:
+    """DC6 scanline coding: 0x80|n skips n transparent pixels, n copies n literal pixels."""
+    out = bytearray()
+    i, width = 0, len(row)
+    while i < width:
+        transparent = row[i] == 0
+        start = i
+        limit = min(width, i + 0x7F)
+        while i < limit and (row[i] == 0) == transparent:
+            i += 1
+        run = i - start
+        if not transparent:
+            out.append(run)
+            out += row[start:i]
+        elif i < width:
+            out.append(0x80 | run)
+    out.append(0x80)
+    return bytes(out)
+
+
+def build(frames, width, height) -> bytes:
+    blocks = []
+    for frame in frames:
+        data = bytearray()
+        for y in range(height - 1, -1, -1):      # DC6 stores scanlines bottom-up
+            data += encode_row(frame.pixels[y * width:(y + 1) * width])
+        blocks.append(bytes(data))
+
+    header_size = (6 + len(blocks)) * 4
+    frame_header_size = 8 * 4
+    pointers, position = [], header_size
+    for block in blocks:
+        pointers.append(position)
+        position += frame_header_size + len(block) + 3
+
+    out = bytearray()
+
+    def dword(v):
+        out.extend(int(v & 0xFFFFFFFF).to_bytes(4, "little"))
+
+    dword(6); dword(1); dword(0); dword(0xEEEEEEEE); dword(1); dword(len(blocks))
+    for p in pointers:
+        dword(p)
+    for pointer, block in zip(pointers, blocks):
+        dword(0)                                  # not flipped
+        dword(width); dword(height)
+        dword(0); dword(0)                        # offsets: we place the sprite ourselves
+        dword(0)
+        dword(pointer + frame_header_size + len(block) + 3)
+        dword(len(block))
+        out += block
+        out += b"\xee\xee\xee"
+    return bytes(out)
+
+
+class _Frame:
+    __slots__ = ("pixels",)
+
+
+def widen(frames, width, height, factor):
+    """Nearest-neighbour, horizontally. A shaft of sunlight is a band, not a filament, and the
+    game's beam is twenty pixels across because it stands upright."""
+    out, new_width = [], width * factor
+    for f in frames:
+        pixels = bytearray(new_width * height)
+        for y in range(height):
+            for x in range(new_width):
+                pixels[y * new_width + x] = f.pixels[y * width + x // factor]
+        g = _Frame()
+        g.pixels = pixels
+        out.append(g)
+    return out, new_width, height
+
+
+def lean(frames, width, height, slope):
+    """Push each row sideways in proportion to its height above the ground.
+
+    The game has no slanted shaft as a sprite — the ones in its dungeons are painted into the
+    floor tiles — but the DC6 is ours to build, so its own upright beam can be leant over. The
+    art, its colours and its twenty-one frames stay the game's; only the geometry changes."""
+    push = int(abs(slope) * height) + 1
+    out, new_width = [], width + push
+    for f in frames:
+        pixels = bytearray(new_width * height)
+        for y in range(height):
+            shift = int(round((height - 1 - y) * slope)) + (push if slope < 0 else 0)
+            for x in range(width):
+                value = f.pixels[y * width + x]
+                if value and 0 <= x + shift < new_width:
+                    pixels[y * new_width + x + shift] = value
+        g = _Frame()
+        g.pixels = pixels
+        out.append(g)
+    return out, new_width, height
+
+
+def emit(name, symbol, out_path, transform=None):
+    raw = raw_from_mpq("d2data.mpq", f"data\\global\\overlays\\{name}.dcc")
+    frames, width, height, box = decode(raw)[0]
+    foot = width // 2
+    if transform:
+        frames, width, height, foot = transform(frames, width, height)
+    blob = build(frames, width, height)
+    with open(out_path, "a") as fh:
+        fh.write(f"\n/* {name}.dcc: {len(frames)} frames, {width}x{height}, "
+                 f"box {box} */\n")
+        fh.write(f"const int {symbol}_frames = {len(frames)};\n")
+        fh.write(f"const int {symbol}_width = {width};\n")
+        fh.write(f"const int {symbol}_height = {height};\n")
+        fh.write(f"const int {symbol}_foot = {foot};\n")
+        fh.write(f"const unsigned int {symbol}_size = {len(blob)};\n")
+        fh.write(f"const unsigned char {symbol}[] = {{\n")
+        for i in range(0, len(blob), 20):
+            fh.write("    " + ",".join(str(b) for b in blob[i:i+20]) + ",\n")
+        fh.write("};\n")
+    print(f"{name}: {len(frames)} frames {width}x{height} -> {len(blob)} bytes of DC6")
+
+
+if __name__ == "__main__":
+    out = sys.argv[1]
+    open(out, "w").write(
+        "/* Generated by scratch/beam/build_dc6.py from the game's own overlay art.\n"
+        " * Do not edit: rerun the generator. */\n"
+        "#include \"art.h\"\n")
+    emit("HoradricLightBeam", "art_beam", out)
+    emit("LIGHTJET", "art_jet", out)
+
+    def sunbeam(frames, width, height):
+        """Three times as wide, then leant over by half a pixel per pixel of height — about 27
+        degrees. The foot stays where the upright beam's foot was, which is what the light has
+        to stand on."""
+        frames, width, height = widen(frames, width, height, 3)
+        foot = width // 2
+        frames, width, height = lean(frames, width, height, 0.5)
+        return frames, width, height, foot
+
+    emit("HoradricLightBeam", "art_slant", out, sunbeam)
