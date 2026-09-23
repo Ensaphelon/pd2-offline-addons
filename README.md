@@ -146,6 +146,12 @@ already in the file and appends its own, and each plugin keeps its own backup su
 suffix would let the second installer overwrite the first's backup of the *pristine* exe with a
 backup of the already-patched one.
 
+**Uninstall in the reverse order you installed.** Each plugin's backup is "the exe as it was
+before *that* plugin touched it", and uninstalling restores it wholesale — so removing the one
+installed *first* puts back an exe that never knew about the second, silently taking it with it.
+Removing the last one installed is always safe. `status` reads the real import table, so if this
+ever happens it is visible rather than merely surprising.
+
 It writes `pd2dpsmeter.log` next to itself, truncated on each attach — one file per game session
 is what you actually want to read.
 

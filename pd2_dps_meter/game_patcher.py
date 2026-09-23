@@ -345,7 +345,10 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
     )
     payload = _build_import_section(pe, PLUGIN_DLL_NAME, PLUGIN_ANCHOR, probe_rva)
 
-    patched, section_rva = _append_section(pe, b".pd2rst", payload)
+    # Its own name, not the sibling plugin's: this Game.exe can already carry that one's
+    # section, and three identically-named sections in one file is a thing nobody should have to
+    # read later.
+    patched, section_rva = _append_section(pe, b".pd2dps", payload)
     if section_rva != probe_rva:  # pragma: no cover - the two agree by construction
         raise GamePatchError("section landed somewhere unexpected")
 
