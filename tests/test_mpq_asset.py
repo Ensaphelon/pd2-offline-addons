@@ -12,7 +12,7 @@ import struct
 from pathlib import Path
 
 import pytest
-from pd2_quick_restart import mpq_asset
+from pd2_offline_addons import mpq_asset
 
 NAME = "data\\local\\ui\\eng\\Restart.dc6"
 OTHER = "data\\global\\excel\\Misc.txt"

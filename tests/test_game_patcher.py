@@ -7,8 +7,8 @@ Windows loader accepts), and the real one is never written to.
 from pathlib import Path
 
 import pytest
-from pd2_quick_restart import game_patcher
-from pd2_quick_restart.safety_pipeline import _line_is_the_game
+from pd2_offline_addons import game_patcher
+from pd2_offline_addons.safety_pipeline import _line_is_the_game
 
 REAL_GAME_EXE = Path(
     "/Users/ramil/Library/Application Support/CrossOver/Bottles/Diablo II/drive_c/"
@@ -120,7 +120,7 @@ def test_an_unsupported_game_version_is_refused(game: Path, tmp_path: Path) -> N
         # while the only match was a command carrying the path as an argument.
         (r"123 shasum -a 256 /path/Diablo II/ProjectD2/Game.exe", False),
         (r"456 /bin/cp /a/Game.exe /b/Game.exe", False),
-        (r"999 python -m pd2_quick_restart", False),
+        (r"999 python -m pd2_offline_addons", False),
     ],
 )
 def test_only_the_game_itself_counts_as_the_game_running(line: str, is_game: bool) -> None:

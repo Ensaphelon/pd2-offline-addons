@@ -20,7 +20,7 @@ import subprocess
 _GAME_PROCESS_PATTERNS = ("Game.exe", "d2se.exe")
 # Extra safety net regardless of pattern precision: never let a match against our own script's
 # argv (which necessarily contains the same save/mpq paths) count as "the game is running".
-_SELF_PROCESS_MARKERS = ("pd2_quick_restart",)
+_SELF_PROCESS_MARKERS = ("pd2_offline_addons",)
 
 
 def is_game_running() -> bool | None:

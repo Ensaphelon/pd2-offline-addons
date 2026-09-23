@@ -24,7 +24,7 @@ import shutil
 import struct
 from pathlib import Path
 
-BACKUP_SUFFIX = ".pd2restart-backup"
+BACKUP_SUFFIX = ".pd2addons-backup"
 
 _HASH_TABLE_OFFSET = 0
 _HASH_NAME_A = 1

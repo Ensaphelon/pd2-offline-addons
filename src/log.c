@@ -17,7 +17,7 @@ void log_init(void *module)
     }
     while (len > 0 && dir[len - 1] != '\\' && dir[len - 1] != '/') len--;
     dir[len] = '\0';
-    _snprintf(log_path, MAX_PATH, "%spd2dpsmeter.log", dir);
+    _snprintf(log_path, MAX_PATH, "%spd2addons.log", dir);
     log_path[MAX_PATH - 1] = '\0';
 
     InitializeCriticalSection(&log_lock);

@@ -1,4 +1,4 @@
-"""`python -m pd2_dps_meter` — look at the install, turn it on, turn it off.
+"""`python -m pd2_offline_addons` — look at the install, turn it on, turn it off.
 
 Every command reads the real files rather than remembering what it did last time, so a game the
 launcher has since replaced, or a Game.exe somebody restored by hand, is reported as it actually
@@ -47,7 +47,7 @@ def _report(game_exe: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pd2-dps-meter", description=__doc__)
+    parser = argparse.ArgumentParser(prog="pd2-offline-addons", description=__doc__)
     parser.add_argument("command", choices=("status", "install", "uninstall"))
     parser.add_argument("--game", help="Game.exe, or the folder holding it")
     args = parser.parse_args(argv)

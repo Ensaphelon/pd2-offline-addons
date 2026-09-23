@@ -13,7 +13,7 @@ import struct
 from pathlib import Path
 
 import pytest
-from pd2_quick_restart import d2gl_patcher
+from pd2_offline_addons import d2gl_patcher
 
 _IMAGE_BASE = 0x10000000
 _SECTION_RVA = 0x1000

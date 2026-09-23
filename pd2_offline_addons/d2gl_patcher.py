@@ -32,7 +32,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-BACKUP_SUFFIX = ".pd2restart-backup"
+BACKUP_SUFFIX = ".pd2addons-backup"
 
 D2GL_DLL_NAME = "glide3x.dll"
 # The entry being repurposed, as D2GL ships it.

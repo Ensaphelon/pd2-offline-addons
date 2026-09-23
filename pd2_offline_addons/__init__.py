@@ -1,6 +1,6 @@
 """Quick Restart — a Restart line in Project Diablo 2's own ESC menu.
 
-Two halves. `pd2restart.dll` is the plugin the game loads: it builds its own copy of the mod's
+Two halves. `pd2addons.dll` is the plugin the game loads: it builds its own copy of the mod's
 menu with one extra entry, hands that copy to the game's own register/draw/release passes, and on
 a click leaves the game and comes straight back in with the same character on the same difficulty.
 The rest of this package installs it: `game_patcher` adds the DLL to Game.exe's import table (and

@@ -1,17 +1,6 @@
-"""Getting this plugin's DLL into the game, and taking it back out.
+"""Quick Restart: getting a plugin DLL into the game, and taking it back out.
 
-Lifted from the sibling pd2-holy-grail project, whose plugin is installed exactly this way and
-has been running in this setup for weeks. Duplicated rather than shared because the two are
-separate repositories and this one should stand on its own; if both keep living, the honest fix
-is to factor the patcher out into something they both depend on.
-
-NOTE both plugins can be installed at once: _build_import_section copies every descriptor already
-in the file and appends one, so patching a Game.exe that already imports the other plugin keeps
-that import and adds this one. The backup suffix is deliberately per-plugin — sharing it would
-mean the second installer overwrote the first's backup of the PRISTINE exe with a backup of the
-already-patched one, and the original would be unrecoverable.
-
-The plugin has to be inside the game process to read its memory, and there is
+The plugin has to be inside the game process to add anything to the ESC menu, and there is
 exactly one moment it can get in: process creation. Injecting into a game that is already
 running does not work here — with the bottle's own session enumerated, every process is
 openable except Game.exe, which refuses OpenProcess outright, down to
@@ -39,12 +28,13 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import d2gl_patcher, mpq_asset
 
-PLUGIN_DLL_NAME = "pd2dpsmeter.dll"
+PLUGIN_DLL_NAME = "pd2addons.dll"
 # Any exported symbol will do — an import entry has to bind to something. The DLL does its work
 # from DllMain; this exists only so there is a name to reference.
-PLUGIN_ANCHOR = "pd2dpsmeter_anchor"
-BACKUP_SUFFIX = ".pd2dpsmeter-backup"
+PLUGIN_ANCHOR = "pd2addons_anchor"
+BACKUP_SUFFIX = ".pd2addons-backup"
 
 # Game.exe FileVersion the plugin's addresses were derived for. 1.13d moved almost everything,
 # so patching anything else in would be writing to addresses that mean something different.
@@ -65,6 +55,29 @@ class GamePatchError(Exception):
 PLUGIN_SOURCE = (
     Path(__file__).resolve().parent.parent / PLUGIN_DLL_NAME
 )
+
+# The RESTART label, and how it reaches the game. A menu entry names a cell file, which the game
+# loads out of an MPQ — loose files on disk are only read with `-direct`, which PD2Launcher does
+# not offer. So the graphic is added to an archive the game already loads.
+#
+# That archive is pd2assets.mpq, for one reason: it is where Project Diablo 2 keeps its OWN menu
+# labels (PD2Options.dc6, PD2Hotkeys.dc6), which the Options submenu visibly draws — so it is
+# proven to be searched for exactly this kind of file. patch_d2.mpq was tried first, being far
+# smaller to back up, and rejected on evidence: its data\global\excel\Misc.txt is the stock
+# 152-row 1.13c table with none of PD2's own codes in it, so it is the untouched vanilla patch
+# archive and sits below PD2's own. Guessing wrong here is not cheap — a menu entry naming a
+# graphic the game cannot find takes the game down with it.
+LABEL_SOURCE = (
+    Path(__file__).resolve().parent.parent / "assets" / "Restart.dc6"
+)
+LABEL_CELL_FILE = "Restart"
+LABEL_ARCHIVE_NAME = "pd2assets.mpq"
+LABEL_ARCHIVE_PATH = "data\\local\\ui\\eng\\Restart.dc6"
+# The plugin reads this to learn the label is really installed. Without it, it leaves the entry
+# with the cell file it copied — a wrong name here would mean the game looking for a graphic that
+# is not there, which it does not survive politely.
+LABEL_MARKER_NAME = "pd2addons.label"
+
 
 def find_game_exe(save_directory: str | None) -> Path | None:
     """Where Game.exe lives, worked out from the save directory the app is already configured
@@ -325,6 +338,7 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
         destination = game_exe.parent / PLUGIN_DLL_NAME
         if plugin_dll.resolve() != destination.resolve():
             shutil.copy2(plugin_dll, destination)
+        _install_label(game_exe.parent)
         return current
 
     backup = game_exe.with_suffix(game_exe.suffix + BACKUP_SUFFIX)
@@ -345,10 +359,7 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
     )
     payload = _build_import_section(pe, PLUGIN_DLL_NAME, PLUGIN_ANCHOR, probe_rva)
 
-    # Its own name, not the sibling plugin's: this Game.exe can already carry that one's
-    # section, and three identically-named sections in one file is a thing nobody should have to
-    # read later.
-    patched, section_rva = _append_section(pe, b".pd2dps", payload)
+    patched, section_rva = _append_section(pe, b".pd2rst", payload)
     if section_rva != probe_rva:  # pragma: no cover - the two agree by construction
         raise GamePatchError("section landed somewhere unexpected")
 
@@ -362,7 +373,84 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
     if plugin_dll.resolve() != destination.resolve():
         shutil.copy2(plugin_dll, destination)
     game_exe.write_bytes(bytes(out.data))
+    _install_label(game_exe.parent)
     return status(game_exe)
+
+
+def _install_label(install_dir: Path) -> bool:
+    """Puts the RESTART graphic into the archive and tells the plugin it is there.
+
+    A failure here is not a failure of the feature: the entry simply keeps the label it copied
+    from the game's own first line. So this reports rather than raises — losing Quick Restart
+    entirely over a cosmetic step would be the worse trade.
+    """
+    marker = install_dir / LABEL_MARKER_NAME
+    archives = _label_archives(install_dir)
+    if not archives or not LABEL_SOURCE.is_file():
+        marker.unlink(missing_ok=True)
+        return False
+    try:
+        payload = LABEL_SOURCE.read_bytes()
+        for archive in archives:
+            mpq_asset.add(archive, LABEL_ARCHIVE_PATH, payload)
+            # Read it back out of the archive rather than trusting the write: the plugin is about
+            # to name this graphic, and the game does not survive being pointed at one that is
+            # missing.
+            if mpq_asset.read(archive, LABEL_ARCHIVE_PATH) != payload:
+                raise mpq_asset.MpqError(f"the label did not read back from {archive.name}")
+    except (mpq_asset.MpqError, OSError):
+        for archive in archives:
+            mpq_asset.restore(archive)
+        marker.unlink(missing_ok=True)
+        return False
+    _teach_d2gl(install_dir)
+    marker.write_text(LABEL_CELL_FILE)
+    return True
+
+
+def _label_size(dc6: bytes) -> tuple[int, int]:
+    """The label graphic's own width and height, read from it rather than written down twice."""
+    frame = struct.unpack_from("<I", dc6, 24)[0]
+    width, height = struct.unpack_from("<2i", dc6, frame + 4)
+    return width, height
+
+
+def _teach_d2gl(install_dir: Path) -> bool:
+    """Makes D2GL render our line the way it renders the others.
+
+    With its hd_text on — the default — D2GL does not draw these labels from their graphics at all;
+    it re-renders them as text, larger and cleaner, and leaves anything it does not recognise as the
+    plain sprite. That is the whole of the difference people see. It recognises a label by the size
+    of the graphic's last cell, so this registers ours. Failing is not fatal: the line then looks
+    the way it did before, which is a cosmetic difference and nothing more.
+    """
+    width, height = _label_size(LABEL_SOURCE.read_bytes())
+    patched = False
+    for dll in _d2gl_libraries(install_dir):
+        try:
+            d2gl_patcher.enable(dll, width=width, height=height)
+            patched = True
+        except (d2gl_patcher.D2glPatchError, OSError):
+            d2gl_patcher.disable(dll)
+    return patched
+
+
+def _d2gl_libraries(install_dir: Path) -> list[Path]:
+    return [path for path in (install_dir / d2gl_patcher.D2GL_DLL_NAME,
+                              install_dir / "Live" / d2gl_patcher.D2GL_DLL_NAME) if path.is_file()]
+
+
+def _label_archives(install_dir: Path) -> list[Path]:
+    """Every copy of the archive the game might end up reading.
+
+    PD2Launcher keeps a pristine set under Live/ and copies it over the install on launch — that is
+    how a patched Game.exe came back pristine and the plugin silently stopped loading. The same
+    would happen to the label, except worse: the marker file would survive, the plugin would go on
+    naming a graphic that had just been restored away, and the game does not survive that. So the
+    Live copy is patched too, and a restore puts both back.
+    """
+    return [path for path in (install_dir / LABEL_ARCHIVE_NAME,
+                              install_dir / "Live" / LABEL_ARCHIVE_NAME) if path.is_file()]
 
 
 def disable(game_exe: Path) -> PatchStatus:
@@ -377,6 +465,12 @@ def disable(game_exe: Path) -> PatchStatus:
 
     plugin = game_exe.parent / PLUGIN_DLL_NAME
     plugin.unlink(missing_ok=True)
+
+    (game_exe.parent / LABEL_MARKER_NAME).unlink(missing_ok=True)
+    for archive in _label_archives(game_exe.parent):
+        mpq_asset.restore(archive)
+    for dll in _d2gl_libraries(game_exe.parent):
+        d2gl_patcher.disable(dll)
 
     result = status(game_exe)
     if not result.installed and backup.is_file():
