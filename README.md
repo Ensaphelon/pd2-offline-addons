@@ -125,14 +125,32 @@ is i686 and that is not negotiable.
 
 Produces `pd2dpsmeter.dll`.
 
-## Running
+## Installing
 
-The DLL has to be loaded into the game process. It exports `pd2dpsmeter_anchor` purely so an
-import-table patch has a symbol to bind to.
+The plugin has to be inside the game process to read its memory, and the only moment it can get
+in is process creation — so Game.exe is made to load it, by adding one entry to its import table.
+The edit is additive and reversible, and nothing belonging to PD2 itself is touched.
+
+```sh
+./build.sh
+python3 -m pd2_dps_meter status    --game "<path to>/ProjectD2/Game.exe"
+python3 -m pd2_dps_meter install   --game "<path to>/ProjectD2/Game.exe"
+python3 -m pd2_dps_meter uninstall --game "<path to>/ProjectD2/Game.exe"
+```
+
+The game must not be running, and a PD2 update replaces Game.exe and silently takes the install
+with it — so `status` reads the real import table rather than remembering what it did last time.
+
+This can live alongside the sibling Holy Grail plugin: the patcher copies every import descriptor
+already in the file and appends its own, and each plugin keeps its own backup suffix. Sharing one
+suffix would let the second installer overwrite the first's backup of the *pristine* exe with a
+backup of the already-patched one.
 
 It writes `pd2dpsmeter.log` next to itself, truncated on each attach — one file per game session
 is what you actually want to read.
 
 ## Status
 
-Stage 1. Not yet tested in-game.
+Stage 1, built and installable, **not yet tested in-game**. The next run should answer two things
+at once: whether `1337` appears where the meter's number goes, and what the log says `n`,
+`pending` and `average` were before anything was written to them.
