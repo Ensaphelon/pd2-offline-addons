@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <string.h>
 #include "log.h"
+#include "addons.h"
 
 /* A moment on every rendered frame, which is where anything drawn over the world has to happen.
  *
@@ -146,6 +147,7 @@ BOOL calls_watch_install(void);
 static void __stdcall our_swap(int interval)
 {
     frames++;
+#if ADDONS_DEV
     DWORD now = GetTickCount();
     if (now - last_report >= 5000) {
         log_line("frame: %lu frames drawn (about %lu per second)",
@@ -155,7 +157,12 @@ static void __stdcall our_swap(int interval)
         frames = 0;
         last_report = now;
     }
+    /* probe.c's per-frame watch: counts the world's objects and maintains hooks on 714 D2Game
+     * call sites to answer what fired when one appeared. The beam does NOT draw from here — it
+     * draws from calls.c's own hooks into D2gfx — so this is scaffolding, and scaffolding in the
+     * game server's hot path on every frame is not something to ship. */
     frame_tick();
+#endif
     if (original_swap) original_swap(interval);
 }
 

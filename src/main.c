@@ -1,6 +1,7 @@
 #include <windows.h>
 #include "d2.h"
 #include "log.h"
+#include "addons.h"
 
 /* One DLL, one thread, three features.
  *
@@ -33,9 +34,6 @@ void dps_tick(void);
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
  * plugin that answers a skill key by playing a sound and dumping memory is not something to ship
  * by accident. Build with -DADDONS_DEV=1 to get them back. */
-#ifndef ADDONS_DEV
-#define ADDONS_DEV 0
-#endif
 #if ADDONS_DEV
 void probe_init(void *module);
 void probe_run(void);
