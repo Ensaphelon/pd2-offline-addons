@@ -97,20 +97,32 @@ static BYTE *player_data(void)
     return *(BYTE **)(unit + UNIT_PLAYER_DATA);
 }
 
-/* Stage one: prove the display path, before a single line of damage accounting is written.
+/* Stage one is done: writing 1337 to PlayerData+0x1AC put 1337 on screen (2026-09-23, in game).
+ * The draw site reads that DWORD and nothing else, so what is left is only choosing the number.
  *
- * The claim to test is that the widget reads nothing but PlayerData+0x1AC. If it does, writing a
- * recognisable constant there puts that constant on screen — and everything else in this project
- * is then only a question of what number to write. If it does NOT, the theory is wrong and it is
- * worth knowing that now rather than after building a damage tracker on top of it.
+ * Stage two is the open question, and the first session could not answer it: the log showed
+ * n/pending/average/window all zero, but nothing was fought, so "the fields never moved" meant
+ * nothing. Worse, forcing a constant every tick would MASK anything PD2 wrote there. So the
+ * constant is off and this now only watches.
  *
- * Set DPS_PROBE_CONSTANT to 0 to stop forcing a value. */
-#define DPS_PROBE_CONSTANT 1337
+ * What to look for while fighting:
+ *   * `pending` or `window` moving  -> PD2's own damage hook IS running offline against this
+ *     struct, and the fix is to let it, not to reimplement it.
+ *   * `average` moving on its own   -> the whole pipeline runs and something else entirely is
+ *     keeping the widget at zero.
+ *   * nothing moving at all         -> the hook runs against the SERVER's copy of the player (D2
+ *     keeps separate unit lists even in single player) or does not run offline. Next step then is
+ *     a hook at ProjectDiablo.dll+0x26F5B6, the `add [eax+0x1a8],ebx` that lands the damage —
+ *     which answers both at once and hands us PD2's own already-clamped number.
+ *
+ * Set this back to a value to force the display again. */
+#define DPS_PROBE_CONSTANT 0
 
 void dps_tick(void)
 {
-    static DWORD last_report;
-    static int said_no_player;
+    static DWORD last_heartbeat;
+    static DWORD seen_count, seen_pending, seen_average, seen_window;
+    static int said_no_player, have_seen;
 
     if (!ensure_ready()) return;
 
@@ -129,19 +141,27 @@ void dps_tick(void)
     DWORD *average = (DWORD *)(data + PD_AVERAGE);
     DWORD *window  = (DWORD *)(data + PD_WINDOW_START);
 
-    /* Once a second is plenty: this is a log to read afterwards, not a trace. */
+    /* Logged on CHANGE rather than on a timer. The first run wrote twenty identical lines for
+     * fifteen seconds, which says nothing; during a fight the only interesting thing is the
+     * moment a field moves, and at 25 ticks a second a timer would either miss it or bury it.
+     * The heartbeat is there so a silent log still distinguishes "nothing happened" from
+     * "the plugin died". */
+    int changed = !have_seen || *count != seen_count || *pending != seen_pending
+                  || *average != seen_average || *window != seen_window;
     DWORD now = GetTickCount();
-    if (now - last_report >= 1000) {
-        last_report = now;
-        log_line("PlayerData %p | n=%lu pending=%lu average=%lu window=%lu",
-                 (void *)data, (unsigned long)*count, (unsigned long)*pending,
+    if (changed || now - last_heartbeat >= 10000) {
+        last_heartbeat = now;
+        seen_count = *count; seen_pending = *pending;
+        seen_average = *average; seen_window = *window;
+        have_seen = 1;
+        log_line("%s PlayerData %p | n=%lu pending=%lu average=%lu window=%lu",
+                 changed ? "CHANGED" : "  still", (void *)data,
+                 (unsigned long)*count, (unsigned long)*pending,
                  (unsigned long)*average, (unsigned long)*window);
     }
 
 #if DPS_PROBE_CONSTANT
-    /* The gate first, or the draw site returns before it reads the value at all. A real session
-     * has this set from the launcher's own "dps" setting, but forcing it makes the probe
-     * independent of that. */
+    /* The gate first, or the draw site returns before it reads the value at all. */
     if (*count == 0) *count = 1;
     *average = DPS_PROBE_CONSTANT;
 #endif

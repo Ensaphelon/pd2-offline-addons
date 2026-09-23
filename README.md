@@ -157,6 +157,15 @@ is what you actually want to read.
 
 ## Status
 
-Stage 1, built and installable, **not yet tested in-game**. The next run should answer two things
-at once: whether `1337` appears where the meter's number goes, and what the log says `n`,
-`pending` and `average` were before anything was written to them.
+**Stage 1 done** (2026-09-23, in game): writing `1337` into `PlayerData+0x1AC` put `1337` on
+screen. The draw site reads that DWORD and nothing else, so everything from here is only a
+question of what number to write — every offset in this README is now confirmed against a
+running game, not just read out of a disassembly.
+
+That session also showed `n=0 pending=0 average=0 window=0` before anything was written, and our
+`1337` surviving untouched for fifteen seconds — so nothing else writes that field while idle.
+It does **not** settle stage 2, because nothing was fought: fields that never move during a
+session with no combat say nothing at all about whether PD2 is counting.
+
+**Stage 2 in progress.** The forced constant is off, so it cannot mask a value PD2 writes, and
+the log now reports on change rather than on a timer. The next session needs a fight.
