@@ -175,8 +175,19 @@ into the gate), so it is live and reachable — and the damage fields stay dead 
 anyway. The damage accounting is running against the server's copy of the player, which offline
 lives in this same process.
 
-**Stage 3 in progress: hooking the damage instruction.** `ProjectDiablo.dll+0x26F5B6`,
-`add [eax+0x1a8], ebx` — whatever struct the damage is being added to, the amount is in EBX, and
-EBX is ours to read. It arrives already clamped to the target's remaining life, so overkill is
-taken off before we ever see it. See `src/hook.c`. The current build only counts and logs; it
-writes nothing into the game.
+**Stage 3: the damage hook installed cleanly and then never fired once through a whole fight.**
+Which located the real blocker one screen up the same function.
+
+`ProjectDiablo.dll+0x26F527` is `cmp [ecx+0x1a4], 0` with a `jbe` on the next line that skips the
+entire damage accounting when it is zero — and ECX there is the *server's* pPlayerData. Online,
+the client asks for the meter by sending packet `0x5C` and the realm sets that flag on its own
+copy. Offline the packet goes nowhere, so the function turns around at that line every time.
+
+That is the piece of "the server" actually worth implementing, and it is one store: set the flag
+the realm would have set. Everything past the gate is PD2's own code doing PD2's own arithmetic —
+its clamp, its averaging, its five-second window. The same hook hands over the server-side
+pPlayerData pointer, which is the other half of the job: the widget draws the *client's* copy, so
+the number has to be carried across.
+
+So the current build hooks the gate, opens it, and mirrors `+0x1AC` from the server's struct to
+the client's. Nothing is recomputed and nothing is approximated. Awaiting the next fight.

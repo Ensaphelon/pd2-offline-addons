@@ -53,8 +53,10 @@
 /* The damage hook (hook.c) — PD2's own already-clamped numbers, straight off the instruction
  * that lands them. */
 int hook_install(void);
+int hook_install_gate(void);
 extern volatile DWORD hook_damage_total;
 extern volatile DWORD hook_hit_count;
+extern void *volatile hook_server_player_data;
 
 /* UnitAny, the only two fields this needs. */
 #define UNIT_TYPE        0x00   /* 0 = player */
@@ -133,6 +135,26 @@ void dps_tick(void)
 
     if (!ensure_ready()) return;
     hook_install();
+    hook_install_gate();
+
+    /* The server's own copy of the same four fields, once a blow has landed and the gate hook
+     * has handed us the pointer. This is where PD2's arithmetic actually happens offline; the
+     * widget reads the client's copy, which is why the number has to be carried across. */
+    static DWORD srv_n, srv_pending, srv_average, srv_window;
+    BYTE *server = (BYTE *)hook_server_player_data;
+    if (server) {
+        DWORD n = *(DWORD *)(server + PD_SAMPLE_COUNT);
+        DWORD pending = *(DWORD *)(server + PD_PENDING);
+        DWORD average = *(DWORD *)(server + PD_AVERAGE);
+        DWORD window = *(DWORD *)(server + PD_WINDOW_START);
+        if (n != srv_n || pending != srv_pending || average != srv_average
+            || window != srv_window) {
+            log_line("SERVER   PlayerData %p | n=%lu pending=%lu average=%lu window=%lu",
+                     (void *)server, (unsigned long)n, (unsigned long)pending,
+                     (unsigned long)average, (unsigned long)window);
+            srv_n = n; srv_pending = pending; srv_average = average; srv_window = window;
+        }
+    }
 
     /* What the hook has seen. Reported separately from the struct watch below, because these two
      * answer different questions: this one says whether PD2's damage path runs offline at all,
@@ -179,6 +201,21 @@ void dps_tick(void)
                  changed ? "CHANGED" : "  still", (void *)data,
                  (unsigned long)*count, (unsigned long)*pending,
                  (unsigned long)*average, (unsigned long)*window);
+    }
+
+    /* The whole point, in one line: the widget draws the client's copy, PD2 computes into the
+     * server's. Mirrored rather than recomputed, so what shows up is PD2's own number — its
+     * averaging, its window, its clamp on overkill — and not an approximation of it.
+     *
+     * The gate is set here too. The client's copy has its own, maintained by the handshake from
+     * the launcher setting, but a zero there means the draw site returns before reading anything
+     * at all, so it is not worth depending on. */
+    if (server) {
+        DWORD server_average = *(DWORD *)(server + PD_AVERAGE);
+        if (server_average != 0) {
+            if (*count == 0) *count = 1;
+            *average = server_average;
+        }
     }
 
 #if DPS_PROBE_CONSTANT

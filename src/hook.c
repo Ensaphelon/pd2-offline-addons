@@ -49,6 +49,31 @@
 static const BYTE EXPECTED[] = { 0x01, 0x98, 0xA8, 0x01, 0x00, 0x00 };
 #define PATCH_LEN (sizeof EXPECTED)
 
+/* The gate that kept the damage path from ever reaching that instruction offline.
+ *
+ * ProjectDiablo.dll+0x26F527, seven bytes: 83 b9 a4 01 00 00 00 = `cmp [ecx+0x1a4], 0`, with a
+ * `jbe` on the next line that skips the whole accounting when it is zero. At this point ECX is
+ * the SERVER's pPlayerData — the function loaded it two instructions earlier out of the attacking
+ * unit.
+ *
+ * Online, the client asks for the meter by sending packet 0x5C and the realm sets that flag on
+ * its own copy. Offline the packet goes nowhere, the flag stays zero, and the function turns
+ * around at this line — which is why the damage hook installed fine and then never fired once
+ * through a whole fight.
+ *
+ * So this is the piece of "the server" actually worth implementing: set the flag the realm would
+ * have set. Everything past the gate is PD2's own code doing PD2's own arithmetic. The same hook
+ * hands us the server-side pPlayerData pointer, which is the other thing we need — the widget
+ * reads the CLIENT's copy, and somebody has to carry the number across. */
+#define RVA_DPS_GATE 0x26F527
+
+static const BYTE GATE_EXPECTED[] = { 0x83, 0xB9, 0xA4, 0x01, 0x00, 0x00, 0x00 };
+#define GATE_LEN (sizeof GATE_EXPECTED)
+
+/* The server's own player struct, as seen from inside the damage path. Published for the polling
+ * thread; NULL until the first blow lands. */
+void *volatile hook_server_player_data;
+
 /* Written by the game's own thread from inside the trampoline, read by ours. Plain aligned
  * DWORDs: on x86 those reads and writes are atomic, and an occasional torn total is not worth a
  * lock in the middle of a damage path. */
@@ -56,6 +81,17 @@ volatile DWORD hook_damage_total;
 volatile DWORD hook_hit_count;
 
 static int installed;
+static int gate_installed;
+
+/* Called from the game's own thread, from inside the trampoline, on every damage event. Kept to
+ * the two stores it needs: this runs in the middle of combat resolution. */
+static void __cdecl on_dps_gate(void *player_data)
+{
+    if (!player_data) return;
+    DWORD *gate = (DWORD *)((BYTE *)player_data + 0x1A4);
+    if (*gate == 0) *gate = 1;          /* what receiving packet 0x5C would have done */
+    hook_server_player_data = player_data;
+}
 
 static void write_u32(BYTE *at, DWORD value)
 {
@@ -113,5 +149,59 @@ int hook_install(void)
     installed = 1;
     log_line("hooked ProjectDiablo.dll+0x%x at %p, trampoline at %p", RVA_DAMAGE_ADD,
              (void *)target, (void *)tramp);
+    return 1;
+}
+
+
+int hook_install_gate(void)
+{
+    if (gate_installed) return 1;
+
+    HMODULE pd2 = GetModuleHandleA("ProjectDiablo.dll");
+    if (!pd2) return 0;
+
+    BYTE *target = (BYTE *)pd2 + RVA_DPS_GATE;
+    if (memcmp(target, GATE_EXPECTED, GATE_LEN) != 0) {
+        log_line("REFUSING to hook the gate: %p does not hold the expected cmp", (void *)target);
+        gate_installed = 1;
+        return 0;
+    }
+
+    BYTE *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) {
+        log_line("could not allocate a gate trampoline");
+        return 0;
+    }
+
+    /* pushad/pushfd around the call, and the original cmp AFTER it rather than before: that cmp
+     * sets the flags the `jbe` on the next line reads, so anything of ours running between them
+     * would decide someone else's branch. popfd lands before it, so the flags the game sees are
+     * the ones its own instruction just set. */
+    int n = 0;
+    tramp[n++] = 0x60;                                        /* pushad                  */
+    tramp[n++] = 0x9C;                                        /* pushfd                  */
+    tramp[n++] = 0x51;                                        /* push ecx (pPlayerData)  */
+    tramp[n++] = 0xE8;                                        /* call on_dps_gate        */
+    write_u32(tramp + n, (DWORD)on_dps_gate - (DWORD)(tramp + n + 4)); n += 4;
+    tramp[n++] = 0x83; tramp[n++] = 0xC4; tramp[n++] = 0x04;  /* add esp,4               */
+    tramp[n++] = 0x9D;                                        /* popfd                   */
+    tramp[n++] = 0x61;                                        /* popad                   */
+    memcpy(tramp + n, GATE_EXPECTED, GATE_LEN); n += GATE_LEN;
+    tramp[n++] = 0xE9;                                        /* jmp rel32 back          */
+    write_u32(tramp + n, (DWORD)(target + GATE_LEN) - (DWORD)(tramp + n + 4)); n += 4;
+
+    DWORD previous;
+    if (!VirtualProtect(target, GATE_LEN, PAGE_EXECUTE_READWRITE, &previous)) {
+        log_line("could not make the gate at %p writable", (void *)target);
+        return 0;
+    }
+    target[0] = 0xE9;
+    write_u32(target + 1, (DWORD)tramp - (DWORD)(target + 5));
+    memset(target + 5, 0x90, GATE_LEN - 5);                   /* pad the spare bytes     */
+    VirtualProtect(target, GATE_LEN, previous, &previous);
+    FlushInstructionCache(GetCurrentProcess(), target, GATE_LEN);
+
+    gate_installed = 1;
+    log_line("hooked the DPS gate at %p, trampoline at %p", (void *)target, (void *)tramp);
     return 1;
 }
