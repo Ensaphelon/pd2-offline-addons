@@ -47,7 +47,14 @@
  */
 
 #include <windows.h>
+#include <string.h>
 #include "log.h"
+
+/* The damage hook (hook.c) — PD2's own already-clamped numbers, straight off the instruction
+ * that lands them. */
+int hook_install(void);
+extern volatile DWORD hook_damage_total;
+extern volatile DWORD hook_hit_count;
 
 /* UnitAny, the only two fields this needs. */
 #define UNIT_TYPE        0x00   /* 0 = player */
@@ -125,6 +132,20 @@ void dps_tick(void)
     static int said_no_player, have_seen;
 
     if (!ensure_ready()) return;
+    hook_install();
+
+    /* What the hook has seen. Reported separately from the struct watch below, because these two
+     * answer different questions: this one says whether PD2's damage path runs offline at all,
+     * that one says whether it reaches the copy of the player the widget draws from. */
+    static DWORD seen_damage, seen_hits;
+    if (hook_damage_total != seen_damage) {
+        log_line("DAMAGE total=%lu over %lu hits (+%lu since last)",
+                 (unsigned long)hook_damage_total, (unsigned long)hook_hit_count,
+                 (unsigned long)(hook_damage_total - seen_damage));
+        seen_damage = hook_damage_total;
+        seen_hits = hook_hit_count;
+    }
+    (void)seen_hits;
 
     BYTE *data = player_data();
     if (!data) {

@@ -167,5 +167,16 @@ That session also showed `n=0 pending=0 average=0 window=0` before anything was 
 It does **not** settle stage 2, because nothing was fought: fields that never move during a
 session with no combat say nothing at all about whether PD2 is counting.
 
-**Stage 2 in progress.** The forced constant is off, so it cannot mask a value PD2 writes, and
-the log now reports on change rather than on a timer. The next session needs a fight.
+**Stage 2 answered, and it is the third outcome.** Through a real fight, the client-side
+`pending` (+0x1A8) and `window` (+0x265) never moved — while `n` (+0x1A4) went from 0 to 1 *on
+its own*. That last detail is what makes it conclusive rather than merely negative: something in
+PD2 does write to this struct (the handshake at +0x23CC30, copying the launcher's `dps` setting
+into the gate), so it is live and reachable — and the damage fields stay dead through combat
+anyway. The damage accounting is running against the server's copy of the player, which offline
+lives in this same process.
+
+**Stage 3 in progress: hooking the damage instruction.** `ProjectDiablo.dll+0x26F5B6`,
+`add [eax+0x1a8], ebx` — whatever struct the damage is being added to, the amount is in EBX, and
+EBX is ours to read. It arrives already clamped to the target's remaining life, so overkill is
+taken off before we ever see it. See `src/hook.c`. The current build only counts and logs; it
+writes nothing into the game.
