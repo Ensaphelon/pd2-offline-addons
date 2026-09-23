@@ -38,6 +38,7 @@ So: one patch, one backup, one DLL, one menu.
 ## Layout
 
 ```
+beam.txt        the beam's default config — read from beside the DLL, re-read while the game runs
 src/            one DLL: main.c drives menu/restart, the beam, and the DPS meter
 pd2_offline_addons/   the installer — one patcher, one backup, one import entry
 assets/         the ESC-menu label graphics, and the generator that sets them from D2's own font
