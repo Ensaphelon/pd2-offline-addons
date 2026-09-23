@@ -127,21 +127,34 @@ static BYTE *player_data(void)
  * Set this back to a value to force the display again. */
 #define DPS_PROBE_CONSTANT 0
 
+/* Every field transition on both structs, plus a running damage total. Invaluable while working
+ * out where the number comes from, far too loud once it is known — a single minute of fighting
+ * produced a hundred and fifty lines. Off by default; turn it on to diagnose a PD2 update that
+ * moves an offset. */
+#define DPS_VERBOSE 0
+
 void dps_tick(void)
 {
+#if DPS_VERBOSE
     static DWORD last_heartbeat;
+#endif
     static DWORD seen_count, seen_pending, seen_average, seen_window;
-    static int said_no_player, have_seen;
+    static int said_no_player, have_seen, said_working;
 
     if (!ensure_ready()) return;
-    hook_install();
     hook_install_gate();
+#if DPS_VERBOSE
+    /* Only for diagnosis. The gate hook is what makes the meter work; this one just counts, and
+     * counting costs two extra writes inside someone else's combat resolution. */
+    hook_install();
+#endif
 
     /* The server's own copy of the same four fields, once a blow has landed and the gate hook
      * has handed us the pointer. This is where PD2's arithmetic actually happens offline; the
      * widget reads the client's copy, which is why the number has to be carried across. */
-    static DWORD srv_n, srv_pending, srv_average, srv_window;
     BYTE *server = (BYTE *)hook_server_player_data;
+#if DPS_VERBOSE
+    static DWORD srv_n, srv_pending, srv_average, srv_window;
     if (server) {
         DWORD n = *(DWORD *)(server + PD_SAMPLE_COUNT);
         DWORD pending = *(DWORD *)(server + PD_PENDING);
@@ -155,10 +168,12 @@ void dps_tick(void)
             srv_n = n; srv_pending = pending; srv_average = average; srv_window = window;
         }
     }
+#endif
 
     /* What the hook has seen. Reported separately from the struct watch below, because these two
      * answer different questions: this one says whether PD2's damage path runs offline at all,
      * that one says whether it reaches the copy of the player the widget draws from. */
+#if DPS_VERBOSE
     static DWORD seen_damage, seen_hits;
     if (hook_damage_total != seen_damage) {
         log_line("DAMAGE total=%lu over %lu hits (+%lu since last)",
@@ -168,6 +183,7 @@ void dps_tick(void)
         seen_hits = hook_hit_count;
     }
     (void)seen_hits;
+#endif
 
     BYTE *data = player_data();
     if (!data) {
@@ -179,16 +195,16 @@ void dps_tick(void)
     }
     said_no_player = 0;
 
+    /* The gate and the number are all a normal run touches on the client's copy; `pending` and
+     * `window` belong to the accumulator, which runs on the server's copy. */
     DWORD *count   = (DWORD *)(data + PD_SAMPLE_COUNT);
-    DWORD *pending = (DWORD *)(data + PD_PENDING);
     DWORD *average = (DWORD *)(data + PD_AVERAGE);
+#if DPS_VERBOSE
+    DWORD *pending = (DWORD *)(data + PD_PENDING);
     DWORD *window  = (DWORD *)(data + PD_WINDOW_START);
+#endif
 
-    /* Logged on CHANGE rather than on a timer. The first run wrote twenty identical lines for
-     * fifteen seconds, which says nothing; during a fight the only interesting thing is the
-     * moment a field moves, and at 25 ticks a second a timer would either miss it or bury it.
-     * The heartbeat is there so a silent log still distinguishes "nothing happened" from
-     * "the plugin died". */
+#if DPS_VERBOSE
     int changed = !have_seen || *count != seen_count || *pending != seen_pending
                   || *average != seen_average || *window != seen_window;
     DWORD now = GetTickCount();
@@ -202,6 +218,9 @@ void dps_tick(void)
                  (unsigned long)*count, (unsigned long)*pending,
                  (unsigned long)*average, (unsigned long)*window);
     }
+#else
+    (void)seen_count; (void)seen_pending; (void)seen_average; (void)seen_window; (void)have_seen;
+#endif
 
     /* The whole point, in one line: the widget draws the client's copy, PD2 computes into the
      * server's. Mirrored rather than recomputed, so what shows up is PD2's own number — its
@@ -215,6 +234,11 @@ void dps_tick(void)
         if (server_average != 0) {
             if (*count == 0) *count = 1;
             *average = server_average;
+            if (!said_working) {
+                said_working = 1;
+                log_line("mirroring: server %p -> client %p, first reading %lu dps",
+                         (void *)server, (void *)data, (unsigned long)server_average);
+            }
         }
     }
 

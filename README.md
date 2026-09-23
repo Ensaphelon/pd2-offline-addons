@@ -157,37 +157,38 @@ is what you actually want to read.
 
 ## Status
 
-**Stage 1 done** (2026-09-23, in game): writing `1337` into `PlayerData+0x1AC` put `1337` on
-screen. The draw site reads that DWORD and nothing else, so everything from here is only a
-question of what number to write — every offset in this README is now confirmed against a
-running game, not just read out of a disassembly.
+**Working.** 2026-09-23, in a real offline game:
 
-That session also showed `n=0 pending=0 average=0 window=0` before anything was written, and our
-`1337` surviving untouched for fifteen seconds — so nothing else writes that field while idle.
-It does **not** settle stage 2, because nothing was fought: fields that never move during a
-session with no combat say nothing at all about whether PD2 is counting.
+```
+hooked the DPS gate at 1026F527
+SERVER  PlayerData 0D1D1800 | n=4 pending=7156 average=14484 window=747
+CHANGED PlayerData 0D1D6800 | n=1 pending=0    average=14484 window=0
+```
 
-**Stage 2 answered, and it is the third outcome.** Through a real fight, the client-side
-`pending` (+0x1A8) and `window` (+0x265) never moved — while `n` (+0x1A4) went from 0 to 1 *on
-its own*. That last detail is what makes it conclusive rather than merely negative: something in
-PD2 does write to this struct (the handshake at +0x23CC30, copying the launcher's `dps` setting
-into the gate), so it is live and reachable — and the damage fields stay dead through combat
-anyway. The damage accounting is running against the server's copy of the player, which offline
-lives in this same process.
+Damage flows (185,323 points over 147 hits in one fight), PD2's own accumulator averages it, and
+the widget draws the result. The two structs track each other to the millisecond.
 
-**Stage 3: the damage hook installed cleanly and then never fired once through a whole fight.**
-Which located the real blocker one screen up the same function.
+Note the dip to zero after five idle seconds in the log: that is PD2's own window expiring —
+`n` drops back to 1 and the average resets — not anything here losing the value. The meter is
+meant to read zero when nothing is being hit.
 
-`ProjectDiablo.dll+0x26F527` is `cmp [ecx+0x1a4], 0` with a `jbe` on the next line that skips the
-entire damage accounting when it is zero — and ECX there is the *server's* pPlayerData. Online,
-the client asks for the meter by sending packet `0x5C` and the realm sets that flag on its own
-copy. Offline the packet goes nowhere, so the function turns around at that line every time.
+### How it got there
 
-That is the piece of "the server" actually worth implementing, and it is one store: set the flag
-the realm would have set. Everything past the gate is PD2's own code doing PD2's own arithmetic —
-its clamp, its averaging, its five-second window. The same hook hands over the server-side
-pPlayerData pointer, which is the other half of the job: the widget draws the *client's* copy, so
-the number has to be carried across.
+| Stage | Question | Answer |
+|---|---|---|
+| 1 | Does the widget read `PlayerData+0x1AC`? | Yes — writing `1337` put `1337` on screen. |
+| 2 | Is PD2 already counting, on the client's copy? | No. `pending`/`window` never moved through a fight — while `n` moved *on its own*, so the struct was live and PD2 did write to it. |
+| 3 | Does PD2's damage path run offline at all? | The hook on `+0x26F5B6` installed and never fired once. |
+| 4 | Then what stops it? | The gate at `+0x26F527`, checking the server copy's flag — the one packet `0x5C` sets online and nothing sets offline. |
 
-So the current build hooks the gate, opens it, and mirrors `+0x1AC` from the server's struct to
-the client's. Nothing is recomputed and nothing is approximated. Awaiting the next fight.
+Two stores were all it needed in the end: set the flag the realm would have set, and carry one
+DWORD from the server's copy to the client's.
+
+### Logging
+
+A normal run writes a handful of lines: the hooks going in, and one saying the mirror is alive
+with its first reading. `DPS_VERBOSE` in `src/dps.c` turns on every field transition on both
+structs plus a running damage total — a minute of fighting produced 150 lines, which is exactly
+what is wanted when a PD2 update moves an offset and exactly what is not wanted otherwise. It
+also installs the damage-counting hook, which is diagnostic only: the gate hook is what makes
+the meter work, and counting costs two extra writes inside combat resolution.
