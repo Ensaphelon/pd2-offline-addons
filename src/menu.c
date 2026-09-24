@@ -134,7 +134,12 @@ static char label_cell_file[64];
 
 static void read_label_marker(void)
 {
-    FILE *file = fopen("pd2restart.label", "rb");
+    /* Has to agree with game_patcher.LABEL_MARKER_NAME, which writes it. The merge renamed the
+     * Python constant and left this behind, and nothing broke — because the old quick-restart
+     * install had left its own marker on disk and this still found that one. A clean install is
+     * what exposed it: on a machine that never had the old plugin there is only the new name,
+     * this would not find it, and the menu entry would silently keep whatever label it copied. */
+    FILE *file = fopen("pd2addons.label", "rb");
     if (!file) {
         log_line("label: no marker file — the entry keeps the label it copies");
         return;
