@@ -30,6 +30,11 @@ BOOL frame_hook_install(void);
 /* The offline DPS meter — resolves its own hooks, retries until PD2's module is loaded. */
 void dps_tick(void);
 
+/* Each area's best reading, written beside the DLL for pd2-holy-inventory to read on its next
+ * scan. Driven from dps_tick, which already has the number; this only needs to be told where to
+ * put the file. */
+void records_init(void *module);
+
 /* The development probes that mapped the game's memory and its sound table. They are driven by
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
  * plugin that answers a skill key by playing a sound and dumping memory is not something to ship
@@ -69,6 +74,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
     menu_install();
     beam_init(module);
+    records_init(module);
     beam_reload();
 #if ADDONS_DEV
     probe_init(module);

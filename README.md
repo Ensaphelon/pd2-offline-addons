@@ -11,7 +11,7 @@ expensive to rediscover:
 |---|---|---|
 | Quick Restart | `pd2-quick-restart` | A `RESTART` line in the ESC menu that drops and remakes the game |
 | Holy Grail beam | `pd2-holy-grail-tracker` | A shaft of light over a drop that would be new to the collection |
-| Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server |
+| Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server, and writes each area's best down for `pd2-holy-inventory` |
 
 ## Why one repository, and one DLL
 

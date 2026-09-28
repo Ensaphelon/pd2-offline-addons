@@ -192,3 +192,90 @@ structs plus a running damage total — a minute of fighting produced 150 lines,
 what is wanted when a PD2 update moves an offset and exactly what is not wanted otherwise. It
 also installs the damage-counting hook, which is diagnostic only: the gate hook is what makes
 the meter work, and counting costs two extra writes inside combat resolution.
+
+---
+
+## Writing the readings down
+
+The number on screen is gone the moment the fight is. `src/records.c` writes each area's best to
+`pd2dpsmeter-records.txt`, beside the DLL, which `pd2-holy-inventory` reads on its next scan and
+turns into a table of personal bests per gear set.
+
+One reading per line, tab-separated — tabs because a character name can hold a space:
+
+```
+<unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,guid,...>
+```
+
+The last field is the player's own equipped item ids and it goes out **empty**; see "What is not
+written" at the end. The trailing tab is still there, and the reader depends on it — a `strip()`
+on that line eats it and leaves six fields where seven are required.
+
+### Who knows what
+
+| Field | Read from | Why here and not there |
+|---|---|---|
+| dps | the mirrored average | not in any file |
+| area id | a walk from the player unit | not in any file |
+| players | `ProjectDiablo.dll+0x4E2500` | not in any file |
+| character | `PlayerData+0x00` | so a reading names itself, instead of being matched to whichever save happened to be written at the same moment |
+| difficulty | `D2Client!GetDifficulty` | also in the save at byte `0xA8`, so the two halves can check each other |
+
+**Why `players` is part of a record and not a note beside it**: PD2's damage hook clamps every
+blow to the target's *remaining* life. On `/players 1` most of a big hit is overkill nobody counts;
+on `/players 8` the same hit lands in full against four times the life. The same gear reads
+differently, so it belongs in the key.
+
+Found by disassembling this install, two independent sites for one global:
+
+```asm
+1023108E  mov ecx,[ecx+0x124] / inc ecx / mov [0x104E2500],ecx   ; the command raising it
+1023CD60  mov ecx,[0x104E2500] / cmp ecx,1 / jle skip            ; and printing "players set to "
+```
+
+Zero is what it holds before the command is ever used, which is `/players 1`.
+
+### When a line is written
+
+On leaving an area, and on leaving the game — not per reading. PD2's number is a five-second
+cumulative mean that moves continuously through a fight; writing every sample would be thousands
+of lines saying the same thing more and more weakly. The best reached in that area is the one
+worth keeping.
+
+Leaving an area is also when the game writes the save, so by the time the app reads the line it
+has just re-read the gear the line is about. That is why the flush happens there and not on a
+timer.
+
+### The area walk, and why it is checked rather than trusted
+
+`UnitAny+0x2C` is the path, which `beam.c` already reads the player's sub-tile position out of, so
+the front of the walk is not in question. Past that it runs
+`Path -> Room1 -> Room2 -> Level -> dwLevelNo`, and **those four links are published layouts, not
+instructions read out of this install** — the one part of this feature that disassembly did not
+pin.
+
+So they prove themselves instead. The rooms point back:
+
+* `Room2+0x30` is the Room1 that owns it, so a candidate pair (`Path->Room1`, `Room1->Room2`) is
+  accepted only when following it and coming back lands on the Room1 it started from.
+* `Level+0x10` is the level's first Room2, and that room's own `pLevel` is the level again — so a
+  candidate `Room2->Level` offset is checked with itself, on a different object.
+
+Neither can pass by accident: a wrong offset lands on some other field and the round trip does not
+close. The level check is tried first and then dropped, so that one unproven offset cannot decide
+whether the feature works at all.
+
+What stays unproven is only **which word of `Level` holds the number**. All three candidates are
+logged with their values the first time the chain resolves, beside the act from `UnitAny+0x18`, so
+a wrong pick reads as a wrong area *name* on the records page — and the log says what it should
+have been. Every read goes through `ReadProcessMemory`, the same way `beam.c` does it and for the
+same reason: `IsBadReadPtr` and `VirtualQuery`-then-read have each taken this game down. The cost
+of being wrong anywhere in the walk is a missing line.
+
+### What is not written
+
+The guid list. The app falls back to the save for what was equipped, which is right nearly always
+and wrong in one case: a weapon swapped mid-fight and still held at the area change is recorded as
+having been worn for the whole reading. Filling it means a second walk through structures this
+plugin does not own, for a correction the save already makes at the next area change. Left undone
+deliberately.

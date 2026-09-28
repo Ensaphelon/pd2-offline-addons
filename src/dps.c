@@ -50,6 +50,10 @@
 #include <string.h>
 #include "log.h"
 
+/* Writing each area's best down for pd2-holy-inventory to pick up (records.c). Fed from here
+ * because this is where the number already is; it reads nothing back. */
+void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average);
+
 /* The damage hook (hook.c) — PD2's own already-clamped numbers, straight off the instruction
  * that lands them. */
 int hook_install(void);
@@ -96,13 +100,18 @@ static int ensure_ready(void)
 }
 
 /* The client's PlayerData, or NULL when there is no player in a game right now (menus, loading).
- * Every read below goes through this, so a stale pointer cannot outlive a game. */
-static BYTE *player_data(void)
+ * Every read below goes through this, so a stale pointer cannot outlive a game.
+ *
+ * `out_unit`, when asked for, keeps the unit as well. The records side needs it: the player's
+ * own struct is where the path to the area starts, and PlayerData does not carry one. */
+static BYTE *player_unit_and_data(BYTE **out_unit)
 {
+    if (out_unit) *out_unit = NULL;
     if (!ready) return NULL;
     BYTE *unit = (BYTE *)get_player_unit();
     if (!unit) return NULL;
     if (*(DWORD *)(unit + UNIT_TYPE) != 0) return NULL;   /* not a player */
+    if (out_unit) *out_unit = unit;
     return *(BYTE **)(unit + UNIT_PLAYER_DATA);
 }
 
@@ -185,12 +194,16 @@ void dps_tick(void)
     (void)seen_hits;
 #endif
 
-    BYTE *data = player_data();
+    BYTE *unit = NULL;
+    BYTE *data = player_unit_and_data(&unit);
     if (!data) {
         if (!said_no_player) {
             log_line("no player unit yet (main menu, or not in a game)");
             said_no_player = 1;
         }
+        /* Leaving the game closes whatever area was open, which is the moment its best reading
+         * is worth writing down — the save has just been written too. */
+        records_tick(NULL, NULL, 0);
         return;
     }
     said_no_player = 0;
@@ -247,4 +260,8 @@ void dps_tick(void)
     if (*count == 0) *count = 1;
     *average = DPS_PROBE_CONSTANT;
 #endif
+
+    /* Whatever the meter says right now, offered to the records side. It keeps the best per area
+     * and writes one line when the area closes — see records.c. */
+    records_tick(unit, data, *average);
 }
