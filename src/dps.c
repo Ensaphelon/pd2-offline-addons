@@ -156,11 +156,10 @@ void dps_tick(void)
     /* Which areas this game corrupted. Retries until PD2's own module is loaded, like the gate
      * hook above it. */
     corrupted_hook_install();
-#if DPS_VERBOSE
-    /* Only for diagnosis. The gate hook is what makes the meter work; this one just counts, and
-     * counting costs two extra writes inside someone else's combat resolution. */
+    /* Counting the damage itself, which is what a run is measured from. Two extra writes inside
+     * someone else's combat resolution, and no call — so unlike the corruption hook there is
+     * nothing of the game's it can stand on. */
     hook_install();
-#endif
 
     /* The server's own copy of the same four fields, once a blow has landed and the gate hook
      * has handed us the pointer. This is where PD2's arithmetic actually happens offline; the

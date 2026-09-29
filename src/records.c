@@ -6,8 +6,8 @@
  *
  * WHAT GOES IN A LINE, AND WHO IS THE AUTHORITY FOR IT
  * ---------------------------------------------------
- *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,...>\t
- *     <corrupted>\t<map stat id:value,...>
+ *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<peak dps>\t<guid,...>\t
+ *     <corrupted>\t<map stat id:value,...>\t<seconds>\t<damage>\t<hits>\t<damage per second,...>
  *
  * Tabs, because a character name can hold a space. The fields are split between the two halves by
  * who can actually know them:
@@ -26,6 +26,12 @@
  *                        corrupted with a Worldstone Shard says so here — the calendar never
  *                        touches a map — and the ids are left for the side that can read
  *                        ItemStatCost to name.
+ *   seconds/damage/hits  the run itself. Damage is PD2's own clamped number — what the blows
+ *                        actually removed, overkill already off.
+ *   damage per second    one figure per second of the run. Every rate anyone wants is worked out
+ *                        from these on the other side, because a peak alone cannot tell a plateau
+ *                        from a ten-second spike, and deciding WHICH rate matters should not mean
+ *                        rebuilding a DLL.
  *
  * WHEN A LINE IS WRITTEN
  * ----------------------
@@ -50,6 +56,18 @@
  * part of what identifies a record rather than a note beside it. */
 int corrupted_hook_install(void);
 int corrupted_is(DWORD level);
+
+/* The damage counter (hook.c). PD2's own number at the instruction that lands it, already
+ * clamped to what the blow actually removed — so this is damage DEALT, with overkill taken off,
+ * which is the one thing a meter cannot reconstruct afterwards.
+ *
+ * Its trampoline is four instructions of assembly with no call in it, so nothing there can
+ * clobber a register the game is holding. It does set flags, which the original `add` also sets —
+ * checked at the site: the next instruction to read flags is preceded by its own `test`, so there
+ * is nothing to preserve. */
+int hook_install(void);
+extern volatile DWORD hook_damage_total;
+extern volatile DWORD hook_hit_count;
 void corrupted_report_once(void);
 void corrupted_probe_area(DWORD level);
 void corrupted_map_stats(char *out, int size);
@@ -58,6 +76,11 @@ void corrupted_map_stats(char *out, int size);
 #define PD_WINDOW_START 0x265
 
 #define RECORDS_NAME "pd2dpsmeter-records.txt"
+
+/* One damage total per second of a run. Half an hour of it; a run longer than that keeps its
+ * totals and stops adding detail, which is a better failure than a line nothing can read. */
+#define MAX_SAMPLES 1800
+#define SAMPLE_MS 1000
 
 /* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first.
  * Same call, and the same reason, as beam.c: IsBadReadPtr and VirtualQuery-then-read have each
@@ -308,6 +331,22 @@ static struct {
      * map. A corrupted map says so here and nowhere else; see corrupted.c. */
     char map_stats[192];
     DWORD best;
+
+    /* The run itself. A peak alone cannot tell a plateau from a ten-second spike, which is the
+     * question a record is actually asked (user, 2026-09-29) — so the damage is kept second by
+     * second and every rate is worked out on the other side, where changing one's mind about a
+     * metric does not mean rebuilding a DLL.
+     *
+     * Damage rather than the meter's own average: the average is a five-second smoothing that
+     * carries across a door, while damage lands where it lands. The totals here need no arming
+     * at all for that reason. */
+    DWORD start_ms;
+    DWORD damage_at_open;
+    DWORD hits_at_open;
+    DWORD last_sample_ms;
+    DWORD last_sample_damage;
+    DWORD sample_count;
+    DWORD samples[MAX_SAMPLES];
 } session;
 
 static void flush(void)
@@ -324,13 +363,27 @@ static void flush(void)
         session.open = 0;
         return;
     }
-    char line[256];
-    int n = _snprintf(line, sizeof(line) - 1, "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\n",
+    /* Big, and static: a half-hour run is some twelve thousand characters of samples, and this
+     * runs on one thread. */
+    static char line[32768];
+    DWORD damage = hook_damage_total - session.damage_at_open;
+    DWORD hits = hook_hit_count - session.hits_at_open;
+    DWORD seconds = (GetTickCount() - session.start_ms) / 1000;
+    int n = _snprintf(line, sizeof(line) - 1,
+                      "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\t%lu\t%lu\t%lu\t",
                       (unsigned long)time(NULL), session.name,
                       (unsigned long)session.area, session.difficulty,
                       (unsigned long)session.players, (unsigned long)session.best,
-                      session.corrupted, session.map_stats);
+                      session.corrupted, session.map_stats,
+                      (unsigned long)seconds, (unsigned long)damage, (unsigned long)hits);
     if (n > 0) {
+        for (DWORD i = 0; i < session.sample_count; i++) {
+            int wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu",
+                                  i ? "," : "", (unsigned long)session.samples[i]);
+            if (wrote < 0 || n + wrote >= (int)sizeof(line) - 2) break;
+            n += wrote;
+        }
+        line[n++] = '\n';
         line[n] = '\0';
         HANDLE h = CreateFileA(records_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -338,10 +391,13 @@ static void flush(void)
             DWORD written = 0;
             WriteFile(h, line, (DWORD)n, &written, NULL);
             CloseHandle(h);
-            log_line("records: %s peaked at %lu dps in area %lu%s on /players %lu",
-                     session.name, (unsigned long)session.best,
-                     (unsigned long)session.area, session.corrupted ? " (corrupted)" : "",
-                     (unsigned long)session.players);
+            log_line("records: %s in area %lu%s on /players %lu — peak %lu, %lu damage over "
+                     "%lus in %lu hits, %lu samples",
+                     session.name, (unsigned long)session.area,
+                     session.corrupted ? " (corrupted)" : "", (unsigned long)session.players,
+                     (unsigned long)session.best, (unsigned long)damage,
+                     (unsigned long)seconds, (unsigned long)hits,
+                     (unsigned long)session.sample_count);
         }
     }
     session.open = 0;
@@ -383,6 +439,12 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
         session.window_at_entry = window;
         session.area = area;
         session.best = 0;
+        session.start_ms = now;
+        session.damage_at_open = hook_damage_total;
+        session.hits_at_open = hook_hit_count;
+        session.last_sample_ms = now;
+        session.last_sample_damage = hook_damage_total;
+        session.sample_count = 0;
         memcpy(session.name, name, sizeof name);
     }
     session.players = player_count();
@@ -392,6 +454,17 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
     session.corrupted = corrupted_is(area);
     corrupted_map_stats(session.map_stats, sizeof session.map_stats);
     corrupted_probe_area(area);
+    /* A second's worth of damage, whether or not the meter has armed: arming is about the
+     * meter's smoothed average, and this is not that. */
+    while (now - session.last_sample_ms >= SAMPLE_MS) {
+        DWORD total = hook_damage_total;
+        if (session.sample_count < MAX_SAMPLES) {
+            session.samples[session.sample_count++] = total - session.last_sample_damage;
+        }
+        session.last_sample_damage = total;
+        session.last_sample_ms += SAMPLE_MS;
+    }
+
     if (!session.armed) {
         if (window == session.window_at_entry) return;
         session.armed = 1;
