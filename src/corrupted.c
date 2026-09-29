@@ -60,6 +60,21 @@ static const BYTE MARK_EXPECTED[] = { 0xC7, 0x80, 0xDC, 0x02, 0x00, 0x00, 0x55, 
 static void *volatile hook_game;
 #define PGAME_LEVELS 0xF0
 
+/* The properties of the MAP this game instance was opened from, as {WORD param, WORD stat id}
+ * followed by the value, 8 bytes per entry, ending at a zero entry.
+ *
+ * Established by running the same Jungle Map corrupted and plain and diffing the two (2026-09-29).
+ * The plain one carried a single entry, `quantity` = 29 — the stack the map came out of. The
+ * corrupted one carried `quantity` = 1 (a corrupted map does not stack with a plain one) plus
+ * seven more, among them `corrupted` and `corruptor`: the very stats any corrupted item carries.
+ *
+ * That is what makes this the right thing to read. The calendar's own marking never touches a
+ * map, and the numbers a corrupted map raises are not dependable — a corruption that grants magic
+ * find moves no monster level and no density at all. The flag is in the map's own properties, and
+ * this is where the game keeps them. */
+#define PGAME_MAP_STATS 0x1DF8
+#define MAP_STAT_ENTRIES 64
+
 /* Levels.txt tops out around 200 ids; 256 covers it with room, and a flat array is cheaper to
  * read from the polling thread than anything cleverer. Written by the game's own thread from
  * inside the trampoline, read by ours — plain bytes, so a torn read is impossible. */
@@ -134,7 +149,7 @@ static void __cdecl on_level_marked(DWORD level, DWORD game)
  *
  * Off in a normal build: it is a question, not a feature. */
 #ifndef CORRUPTED_PROBE
-#define CORRUPTED_PROBE 1
+#define CORRUPTED_PROBE 0
 #endif
 
 int corrupted_is(DWORD level)
@@ -162,6 +177,7 @@ void corrupted_report_once(void)
     log_line("corrupted: this game's corrupted areas are %s", line);
 }
 
+#if CORRUPTED_PROBE
 /* One line per 32 words, so a whole struct fits the logger's own line budget. */
 static void dump_words(const char *what, DWORD base, DWORD at, int words)
 {
@@ -186,7 +202,6 @@ static void dump_words(const char *what, DWORD base, DWORD at, int words)
 
 void corrupted_probe_area(DWORD level_id)
 {
-#if CORRUPTED_PROBE
     static DWORD reported[MAX_LEVEL];
     DWORD level_ptr = 0, density = 0, monlvl = 0, monlvl2 = 0, id_back = 0;
 
@@ -217,9 +232,31 @@ void corrupted_probe_area(DWORD level_id)
      * event state at +0x2628 both live here, so a map's own corruption may well too. */
     dump_words("game", (DWORD)(UINT_PTR)hook_game, 0x1DC0, 48);
     dump_words("game", (DWORD)(UINT_PTR)hook_game, 0x2600, 48);
+}
 #else
-    (void)level_id;
+void corrupted_probe_area(DWORD level_id) { (void)level_id; }
 #endif
+
+/* The map's properties as `id:value` pairs, for the record line. Written out raw rather than
+ * reduced to a yes/no here: the plugin has no tables, so WHICH stat means corrupted is a question
+ * for the side that can read ItemStatCost — and the rest of the list is the map's own modifiers,
+ * which are worth keeping now that they cost nothing. */
+void corrupted_map_stats(char *out, int size)
+{
+    out[0] = '\0';
+    if (!hook_game) return;
+
+    int used = 0;
+    for (int i = 0; i < MAP_STAT_ENTRIES; i++) {
+        DWORD entry[2];
+        if (!safe_read((BYTE *)hook_game + PGAME_MAP_STATS + i * 8, entry, sizeof entry)) return;
+        if (entry[0] == 0 && entry[1] == 0) return;
+        int wrote = _snprintf(out + used, size - used - 1, "%s%lu:%lu", used ? "," : "",
+                              (unsigned long)(entry[0] >> 16), (unsigned long)entry[1]);
+        if (wrote < 0 || used + wrote >= size - 1) return;
+        used += wrote;
+        out[used] = '\0';
+    }
 }
 
 int corrupted_hook_install(void)

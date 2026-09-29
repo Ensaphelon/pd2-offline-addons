@@ -6,7 +6,8 @@
  *
  * WHAT GOES IN A LINE, AND WHO IS THE AUTHORITY FOR IT
  * ---------------------------------------------------
- *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,...>\t<corrupted>
+ *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,...>\t
+ *     <corrupted>\t<map stat id:value,...>
  *
  * Tabs, because a character name can hold a space. The fields are split between the two halves by
  * who can actually know them:
@@ -20,7 +21,11 @@
  *   guids                left empty on purpose — see "What is not written" at the end.
  *   corrupted            1 when the game corrupted this area for this game, 0 when it did not.
  *                        Read from the game marking it; see corrupted.c for why nothing cheaper
- *                        works.
+ *                        works. It covers the CALENDAR's corruption only.
+ *   map stats            what the map this instance came from is worth, as `id:value`. A map
+ *                        corrupted with a Worldstone Shard says so here — the calendar never
+ *                        touches a map — and the ids are left for the side that can read
+ *                        ItemStatCost to name.
  *
  * WHEN A LINE IS WRITTEN
  * ----------------------
@@ -47,6 +52,7 @@ int corrupted_hook_install(void);
 int corrupted_is(DWORD level);
 void corrupted_report_once(void);
 void corrupted_probe_area(DWORD level);
+void corrupted_map_stats(char *out, int size);
 
 /* The accumulator's own window, as PD2 keeps it. See `armed` below for what it is for. */
 #define PD_WINDOW_START 0x265
@@ -298,6 +304,9 @@ static struct {
     DWORD players;
     int difficulty;
     int corrupted;
+    /* What the MAP this instance was opened from is worth, as `id:value` pairs — empty outside a
+     * map. A corrupted map says so here and nowhere else; see corrupted.c. */
+    char map_stats[192];
     DWORD best;
 } session;
 
@@ -316,11 +325,11 @@ static void flush(void)
         return;
     }
     char line[256];
-    int n = _snprintf(line, sizeof(line) - 1, "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\n",
+    int n = _snprintf(line, sizeof(line) - 1, "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\n",
                       (unsigned long)time(NULL), session.name,
                       (unsigned long)session.area, session.difficulty,
                       (unsigned long)session.players, (unsigned long)session.best,
-                      session.corrupted);
+                      session.corrupted, session.map_stats);
     if (n > 0) {
         line[n] = '\0';
         HANDLE h = CreateFileA(records_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -381,6 +390,7 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
     /* Read per tick rather than once: the mark for a game arrives with the chat announcement,
      * which can land after the player is already standing somewhere. */
     session.corrupted = corrupted_is(area);
+    corrupted_map_stats(session.map_stats, sizeof session.map_stats);
     corrupted_probe_area(area);
     if (!session.armed) {
         if (window == session.window_at_entry) return;
