@@ -47,6 +47,9 @@ int corrupted_hook_install(void);
 int corrupted_is(DWORD level);
 void corrupted_report_once(void);
 
+/* The accumulator's own window, as PD2 keeps it. See `armed` below for what it is for. */
+#define PD_WINDOW_START 0x265
+
 #define RECORDS_NAME "pd2dpsmeter-records.txt"
 
 /* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first.
@@ -271,13 +274,24 @@ void records_init(void *module)
  * `armed` is what keeps the last area's fight from being credited to this one. PD2's number is a
  * five-second mean, so walking out of a fight and into town carries the tail of it through the
  * door — which is how a first real session put 36,544 dps in Harrogath, a town, where nothing can
- * be hit at all. Nothing counts here until the meter has read zero once since the area changed,
- * which is that window closing. A fight already in progress when the area changes is therefore
- * not recorded, and that is the right way round: losing a reading is better than filing it under
- * the wrong place. */
+ * be hit at all.
+ *
+ * It arms on PD2's OWN window boundary: the accumulator keeps the tick its current five-second
+ * window began on, and when that value moves, that window has closed. Everything after it was
+ * dealt since, so there is nothing left to carry over.
+ *
+ * Waiting for the number to read ZERO instead, which is what this did first, was wrong in a way
+ * that only showed up in play: the average returns to zero only after a LULL, so walking into an
+ * area and fighting immediately armed nothing until the fighting stopped — and the first fight,
+ * the big one, was thrown away. A real Inner Cloister run recorded 6,131 when the player had
+ * plainly seen more.
+ *
+ * The town case still holds, and for a better reason than before: nothing is hit in a town, so
+ * the accumulator never runs, the window never moves, and nothing arms at all. */
 static struct {
     int open;
     int armed;
+    DWORD window_at_entry;
     char name[17];
     DWORD area;
     DWORD players;
@@ -326,7 +340,7 @@ static void flush(void)
 /* Called every tick with whatever the meter currently reads. `unit` and `player_data` are NULL
  * outside a game, which is itself a flush: the save has just been written and the character is
  * about to be somebody else. */
-void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average)
+void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWORD window)
 {
     if (!unit || !player_data) {
         flush();
@@ -356,6 +370,7 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average)
     if (!session.open) {
         session.open = 1;
         session.armed = 0;
+        session.window_at_entry = window;
         session.area = area;
         session.best = 0;
         memcpy(session.name, name, sizeof name);
@@ -366,8 +381,8 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average)
      * which can land after the player is already standing somewhere. */
     session.corrupted = corrupted_is(area);
     if (!session.armed) {
-        session.armed = (average == 0);
-        return;
+        if (window == session.window_at_entry) return;
+        session.armed = 1;
     }
     corrupted_report_once();
     if (average > session.best) session.best = average;

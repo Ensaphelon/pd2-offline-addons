@@ -52,7 +52,7 @@
 
 /* Writing each area's best down for pd2-holy-inventory to pick up (records.c). Fed from here
  * because this is where the number already is; it reads nothing back. */
-void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average);
+void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWORD window);
 int corrupted_hook_install(void);
 
 /* The damage hook (hook.c) — PD2's own already-clamped numbers, straight off the instruction
@@ -207,7 +207,7 @@ void dps_tick(void)
         }
         /* Leaving the game closes whatever area was open, which is the moment its best reading
          * is worth writing down — the save has just been written too. */
-        records_tick(NULL, NULL, 0);
+        records_tick(NULL, NULL, 0, 0);
         return;
     }
     said_no_player = 0;
@@ -246,10 +246,13 @@ void dps_tick(void)
      * The gate is set here too. The client's copy has its own, maintained by the handshake from
      * the launcher setting, but a zero there means the draw site returns before reading anything
      * at all, so it is not worth depending on. */
-    DWORD live = 0;
+    DWORD live = 0, live_window = 0;
     if (server) {
         DWORD server_average = *(DWORD *)(server + PD_AVERAGE);
         live = server_average;
+        /* The tick the current averaging window began on. Records arms on this MOVING, which is
+         * how it tells damage dealt since entering an area from the tail of the fight before it. */
+        live_window = *(DWORD *)(server + PD_WINDOW_START);
         if (server_average != 0) {
             if (*count == 0) *count = 1;
             *average = server_average;
@@ -271,5 +274,5 @@ void dps_tick(void)
      * so the client's copy keeps the last number it was given for as long as the game lasts —
      * fine for a widget, useless to anything that needs to know when a fight ENDED. Records reads
      * the live one, which expires with PD2's own five-second window. */
-    records_tick(unit, data, live);
+    records_tick(unit, data, live, live_window);
 }

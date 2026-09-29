@@ -249,6 +249,20 @@ zero once since the change, which is that window closing. A fight already in pro
 area changes is therefore not recorded, which is the right way round: losing a reading is better
 than filing it under the wrong place.
 
+An area also does not start counting until PD2's own averaging window has turned over since the
+door. The accumulator keeps the tick its current five-second window began on, and when that value
+moves, that window has closed — everything after it was dealt since, so there is nothing left to
+carry over.
+
+Waiting for the number to read ZERO instead, which is what this did first, was wrong in a way
+that only showed up in play: the average returns to zero after a LULL, so walking into an area and
+fighting straight away armed nothing until the fighting stopped, and the first fight — the big one
+— was thrown away. A real Inner Cloister run recorded 6,131 where the player had plainly seen
+more; the next visit to the same place, with a pause after entering, recorded 76,026.
+
+The town case still holds, and for a better reason than before: nothing is hit in a town, so the
+accumulator never runs, the window never moves, and nothing arms at all.
+
 ### When a line is written
 
 On leaving an area, and on leaving the game — not per reading. PD2's number is a five-second
