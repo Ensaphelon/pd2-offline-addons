@@ -66,6 +66,10 @@ static void *volatile hook_game;
 #define MAX_LEVEL 256
 static volatile BYTE corrupted[MAX_LEVEL];
 static volatile DWORD mark_count;
+/* Bumped when a new game picks its group, so the probe below dumps an area once per GAME. It was
+ * once per process, which meant a session that ran the same map twice — the whole point of the
+ * comparison — only ever recorded the first. */
+static volatile DWORD game_generation;
 
 static int installed;
 
@@ -101,6 +105,7 @@ static void __cdecl on_level_marked(DWORD level, DWORD game)
     if (now - last_mark > 1000) {
         memset((void *)corrupted, 0, sizeof corrupted);
         mark_count = 0;
+        game_generation++;
         DWORD which = 0;
         if (game) which = *(DWORD *)((BYTE *)game + PGAME_CORRUPTED_ZONE);
         log_line("corrupted: a new game corrupts group %lu", (unsigned long)which);
@@ -132,34 +137,6 @@ static void __cdecl on_level_marked(DWORD level, DWORD game)
 #define CORRUPTED_PROBE 1
 #endif
 
-void corrupted_probe_area(DWORD level_id)
-{
-#if CORRUPTED_PROBE
-    static BYTE reported[MAX_LEVEL];
-    DWORD level_ptr = 0, words[20];
-
-    if (!hook_game || level_id >= MAX_LEVEL || reported[level_id]) return;
-    if (!safe_read((BYTE *)hook_game + PGAME_LEVELS + level_id * 4, &level_ptr, 4)) return;
-    if (level_ptr < 0x10000) return;
-    if (!safe_read((void *)(UINT_PTR)(level_ptr + 0x2B0), words, sizeof words)) return;
-    reported[level_id] = 1;
-
-    char line[512];
-    int used = 0;
-    for (int i = 0; i < (int)(sizeof words / sizeof words[0]); i++) {
-        int wrote = _snprintf(line + used, sizeof(line) - used - 1, "%s+%03x=%lu",
-                              used ? " " : "", 0x2B0 + i * 4, (unsigned long)words[i]);
-        if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) break;
-        used += wrote;
-    }
-    line[used] = '\0';
-    log_line("probe: area %lu (marked=%d) server Level %p | %s",
-             (unsigned long)level_id, corrupted_is(level_id), (void *)(UINT_PTR)level_ptr, line);
-#else
-    (void)level_id;
-#endif
-}
-
 int corrupted_is(DWORD level)
 {
     return level < MAX_LEVEL && corrupted[level] != 0;
@@ -183,6 +160,66 @@ void corrupted_report_once(void)
     }
     line[used] = '\0';
     log_line("corrupted: this game's corrupted areas are %s", line);
+}
+
+/* One line per 32 words, so a whole struct fits the logger's own line budget. */
+static void dump_words(const char *what, DWORD base, DWORD at, int words)
+{
+    for (int start = 0; start < words; start += 32) {
+        DWORD block[32];
+        int n = words - start < 32 ? words - start : 32;
+        if (!safe_read((void *)(UINT_PTR)(base + at + start * 4), block, n * 4)) return;
+        char line[640];
+        int used = _snprintf(line, sizeof(line) - 1, "probe: %s +%04x ", what,
+                             (unsigned)(at + start * 4));
+        if (used < 0) return;
+        for (int i = 0; i < n; i++) {
+            int wrote = _snprintf(line + used, sizeof(line) - used - 1, "%08lx ",
+                                  (unsigned long)block[i]);
+            if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) break;
+            used += wrote;
+        }
+        line[used] = '\0';
+        log_line("%s", line);
+    }
+}
+
+void corrupted_probe_area(DWORD level_id)
+{
+#if CORRUPTED_PROBE
+    static DWORD reported[MAX_LEVEL];
+    DWORD level_ptr = 0, density = 0, monlvl = 0, monlvl2 = 0, id_back = 0;
+
+    if (!hook_game || level_id >= MAX_LEVEL) return;
+    if (reported[level_id] == game_generation + 1) return;
+    if (!safe_read((BYTE *)hook_game + PGAME_LEVELS + level_id * 4, &level_ptr, 4)) return;
+    if (level_ptr < 0x10000) return;
+    reported[level_id] = game_generation + 1;
+
+    /* The three the dump already showed to be real, read out by name so the comparison does not
+     * need hex: for a plain Jungle Map they came back at exactly its Levels.txt row — density
+     * 1980, monster level 87 — and +0x2C0 held the level's own id, which is what says the struct
+     * is the one it is meant to be. A corrupted map should differ from its table row somewhere
+     * here; that is the whole question. */
+    safe_read((void *)(UINT_PTR)(level_ptr + 0x2B8), &density, 4);
+    safe_read((void *)(UINT_PTR)(level_ptr + 0x2C0), &id_back, 4);
+    safe_read((void *)(UINT_PTR)(level_ptr + 0x2DC), &monlvl, 4);
+    safe_read((void *)(UINT_PTR)(level_ptr + 0x2E0), &monlvl2, 4);
+    log_line("probe: area %lu (marked=%d) density=%lu monlvl=%lu/%lu id_back=%lu | Level %p",
+             (unsigned long)level_id, corrupted_is(level_id), (unsigned long)density,
+             (unsigned long)monlvl, (unsigned long)monlvl2, (unsigned long)id_back,
+             (void *)(UINT_PTR)level_ptr);
+    /* The whole plausible Level. The calendar writes +0x2B8/+0x2DC/+0x2E0, but a shard's mark is
+     * not established at all, so nothing is assumed about where to look: two maps of the same
+     * type, one corrupted and one not, and the answer is in the diff. */
+    dump_words("level", level_ptr, 0x000, 256);
+    /* And the per-game fields the map machinery already uses — the event type at +0x1DF4 and the
+     * event state at +0x2628 both live here, so a map's own corruption may well too. */
+    dump_words("game", (DWORD)(UINT_PTR)hook_game, 0x1DC0, 48);
+    dump_words("game", (DWORD)(UINT_PTR)hook_game, 0x2600, 48);
+#else
+    (void)level_id;
+#endif
 }
 
 int corrupted_hook_install(void)
