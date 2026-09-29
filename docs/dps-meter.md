@@ -235,6 +235,20 @@ Found by disassembling this install, two independent sites for one global:
 
 Zero is what it holds before the command is ever used, which is `/players 1`.
 
+### Where the number comes from, and why not the one on screen
+
+The records side reads the **server's** average, not the client's. The mirror that makes the
+widget work only ever writes a non-zero value, so the client's copy keeps the last number it was
+handed for as long as the game lasts. That is fine for a widget and useless to anything that needs
+to know when a fight *ended*.
+
+It matters because the number is a five-second mean, so walking out of a fight and into town
+carries the tail of it through the door. The first real session put **36,544 dps in Harrogath** — a
+town, where nothing can be hit at all. So an area does not start counting until the meter has read
+zero once since the change, which is that window closing. A fight already in progress when the
+area changes is therefore not recorded, which is the right way round: losing a reading is better
+than filing it under the wrong place.
+
 ### When a line is written
 
 On leaving an area, and on leaving the game — not per reading. PD2's number is a five-second

@@ -257,9 +257,18 @@ void records_init(void *module)
     records_path[MAX_PATH - 1] = '\0';
 }
 
-/* What has been seen since entering the area that is currently open. */
+/* What has been seen since entering the area that is currently open.
+ *
+ * `armed` is what keeps the last area's fight from being credited to this one. PD2's number is a
+ * five-second mean, so walking out of a fight and into town carries the tail of it through the
+ * door — which is how a first real session put 36,544 dps in Harrogath, a town, where nothing can
+ * be hit at all. Nothing counts here until the meter has read zero once since the area changed,
+ * which is that window closing. A fight already in progress when the area changes is therefore
+ * not recorded, and that is the right way round: losing a reading is better than filing it under
+ * the wrong place. */
 static struct {
     int open;
+    int armed;
     char name[17];
     DWORD area;
     DWORD players;
@@ -334,12 +343,17 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average)
 
     if (!session.open) {
         session.open = 1;
+        session.armed = 0;
         session.area = area;
         session.best = 0;
         memcpy(session.name, name, sizeof name);
     }
     session.players = player_count();
     session.difficulty = difficulty();
+    if (!session.armed) {
+        session.armed = (average == 0);
+        return;
+    }
     if (average > session.best) session.best = average;
 }
 

@@ -242,8 +242,10 @@ void dps_tick(void)
      * The gate is set here too. The client's copy has its own, maintained by the handshake from
      * the launcher setting, but a zero there means the draw site returns before reading anything
      * at all, so it is not worth depending on. */
+    DWORD live = 0;
     if (server) {
         DWORD server_average = *(DWORD *)(server + PD_AVERAGE);
+        live = server_average;
         if (server_average != 0) {
             if (*count == 0) *count = 1;
             *average = server_average;
@@ -261,7 +263,9 @@ void dps_tick(void)
     *average = DPS_PROBE_CONSTANT;
 #endif
 
-    /* Whatever the meter says right now, offered to the records side. It keeps the best per area
-     * and writes one line when the area closes — see records.c. */
-    records_tick(unit, data, *average);
+    /* The SERVER's reading, not the client's. The mirror above only ever writes a non-zero value,
+     * so the client's copy keeps the last number it was given for as long as the game lasts —
+     * fine for a widget, useless to anything that needs to know when a fight ENDED. Records reads
+     * the live one, which expires with PD2's own five-second window. */
+    records_tick(unit, data, live);
 }
