@@ -53,6 +53,7 @@
 /* Writing each area's best down for pd2-holy-inventory to pick up (records.c). Fed from here
  * because this is where the number already is; it reads nothing back. */
 void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average);
+int corrupted_hook_install(void);
 
 /* The damage hook (hook.c) — PD2's own already-clamped numbers, straight off the instruction
  * that lands them. */
@@ -152,6 +153,9 @@ void dps_tick(void)
 
     if (!ensure_ready()) return;
     hook_install_gate();
+    /* Which areas this game corrupted. Retries until PD2's own module is loaded, like the gate
+     * hook above it. */
+    corrupted_hook_install();
 #if DPS_VERBOSE
     /* Only for diagnosis. The gate hook is what makes the meter work; this one just counts, and
      * counting costs two extra writes inside someone else's combat resolution. */

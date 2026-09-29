@@ -286,6 +286,39 @@ have been. Every read goes through `ReadProcessMemory`, the same way `beam.c` do
 same reason: `IsBadReadPtr` and `VirtualQuery`-then-read have each taken this game down. The cost
 of being wrong anywhere in the walk is a missing line.
 
+### Corrupted zones
+
+PD2 corrupts a group of zones per game (the client says so in chat: "Corruption spreads in the
+Worldstone Keep and Throne of Destruction..."), and a map can be corrupted with a Worldstone
+Shard. A corrupted zone is not the same test as the plain one, so the flag is part of a record's
+key rather than a note beside it.
+
+Three cheaper answers were tried against real data first, and each is wrong:
+
+| Tried | Why it fails |
+|---|---|
+| The area id | A corrupted zone keeps the ordinary id. A real corrupted run came back as 129/130, the plain Worldstone Keep levels. |
+| The announced name | Checked across all 37 groups against the installed `Levels.txt`: six match nothing, Uber Tristram is matched by mistake, and PD2 renamed "Frigid Highlands" to "Rigid Highlands" — so the match misses exactly the zone that prompted this. |
+| The monster level | Corruption forces the level to 85, and Hell's Worldstone Keep 2 is *already* 85 in `Levels.txt`. Blind precisely where it is needed. |
+
+What does say is the game itself. `ProjectDiablo.dll+0x26C310` picks the group (`nCorruptedZone`,
+a random `1..n` kept at `pGame+0x26F2`, chosen once per game), then walks that group's level list
+and marks each one:
+
+```asm
+1026c4d7  mov eax, [edi + esi*4 + 0xf0]     ; edi = pGame, esi = the level
+1026c4de  mov dword [eax + 0x2dc], 0x55     ; <- hooked here; 85 is the corrupted level
+1026c4ef  mov dword [eax + 0x2e0], 0x55
+```
+
+`src/corrupted.c` hooks that store and keeps the ids it sees. That reads the game's own answer
+rather than reconstructing it: no group table to find, no struct layout assumed past what is
+already patched, and nothing a PD2 rename can rot. ESI is the level at that instant and ESI is
+all it takes. Ten bytes is a roomy landing site, and `mov` sets no flags.
+
+The set is cleared when a mark arrives long after the last one: a group is written in one tight
+loop, so its own marks land microseconds apart while the next game's run is a whole game away.
+
 ### What is not written
 
 The guid list. The app falls back to the save for what was equipped, which is right nearly always

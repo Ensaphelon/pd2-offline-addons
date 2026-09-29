@@ -6,7 +6,7 @@
  *
  * WHAT GOES IN A LINE, AND WHO IS THE AUTHORITY FOR IT
  * ---------------------------------------------------
- *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,guid,...>
+ *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<dps>\t<guid,...>\t<corrupted>
  *
  * Tabs, because a character name can hold a space. The fields are split between the two halves by
  * who can actually know them:
@@ -18,6 +18,9 @@
  *                        (byte 0xA8, one per difficulty, high bit on the active one), so the two
  *                        halves can check each other if it ever matters.
  *   guids                left empty on purpose — see "What is not written" at the end.
+ *   corrupted            1 when the game corrupted this area for this game, 0 when it did not.
+ *                        Read from the game marking it; see corrupted.c for why nothing cheaper
+ *                        works.
  *
  * WHEN A LINE IS WRITTEN
  * ----------------------
@@ -37,6 +40,12 @@
 #include <time.h>
 #include "d2.h"
 #include "log.h"
+
+/* Which areas this game corrupted (corrupted.c). A corrupted zone hits differently, so it is
+ * part of what identifies a record rather than a note beside it. */
+int corrupted_hook_install(void);
+int corrupted_is(DWORD level);
+void corrupted_report_once(void);
 
 #define RECORDS_NAME "pd2dpsmeter-records.txt"
 
@@ -273,6 +282,7 @@ static struct {
     DWORD area;
     DWORD players;
     int difficulty;
+    int corrupted;
     DWORD best;
 } session;
 
@@ -291,10 +301,11 @@ static void flush(void)
         return;
     }
     char line[256];
-    int n = _snprintf(line, sizeof(line) - 1, "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\n",
+    int n = _snprintf(line, sizeof(line) - 1, "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\n",
                       (unsigned long)time(NULL), session.name,
                       (unsigned long)session.area, session.difficulty,
-                      (unsigned long)session.players, (unsigned long)session.best);
+                      (unsigned long)session.players, (unsigned long)session.best,
+                      session.corrupted);
     if (n > 0) {
         line[n] = '\0';
         HANDLE h = CreateFileA(records_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -303,9 +314,10 @@ static void flush(void)
             DWORD written = 0;
             WriteFile(h, line, (DWORD)n, &written, NULL);
             CloseHandle(h);
-            log_line("records: %s peaked at %lu dps in area %lu on /players %lu",
+            log_line("records: %s peaked at %lu dps in area %lu%s on /players %lu",
                      session.name, (unsigned long)session.best,
-                     (unsigned long)session.area, (unsigned long)session.players);
+                     (unsigned long)session.area, session.corrupted ? " (corrupted)" : "",
+                     (unsigned long)session.players);
         }
     }
     session.open = 0;
@@ -350,10 +362,14 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average)
     }
     session.players = player_count();
     session.difficulty = difficulty();
+    /* Read per tick rather than once: the mark for a game arrives with the chat announcement,
+     * which can land after the player is already standing somewhere. */
+    session.corrupted = corrupted_is(area);
     if (!session.armed) {
         session.armed = (average == 0);
         return;
     }
+    corrupted_report_once();
     if (average > session.best) session.best = average;
 }
 
