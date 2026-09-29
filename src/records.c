@@ -46,6 +46,7 @@
 int corrupted_hook_install(void);
 int corrupted_is(DWORD level);
 void corrupted_report_once(void);
+void corrupted_probe_area(DWORD level);
 
 /* The accumulator's own window, as PD2 keeps it. See `armed` below for what it is for. */
 #define PD_WINDOW_START 0x265
@@ -380,6 +381,7 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
     /* Read per tick rather than once: the mark for a game arrives with the chat announcement,
      * which can land after the player is already standing somewhere. */
     session.corrupted = corrupted_is(area);
+    corrupted_probe_area(area);
     if (!session.armed) {
         if (window == session.window_at_entry) return;
         session.armed = 1;

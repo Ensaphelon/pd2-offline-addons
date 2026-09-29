@@ -53,6 +53,13 @@ static const BYTE MARK_EXPECTED[] = { 0xC7, 0x80, 0xDC, 0x02, 0x00, 0x00, 0x55, 
  * be checked against the line it printed in chat. Not used for anything else. */
 #define PGAME_CORRUPTED_ZONE 0x26F2
 
+/* The game struct the marking runs against, kept so the SERVER's own Level for an area can be
+ * read — pGame+0xF0 is an array of Level* indexed by level id, which is how the marking loop
+ * reaches them (`mov eax, [edi + esi*4 + 0xf0]`). Published for the probe below; NULL until the
+ * first game has chosen its group. */
+static void *volatile hook_game;
+#define PGAME_LEVELS 0xF0
+
 /* Levels.txt tops out around 200 ids; 256 covers it with room, and a flat array is cheaper to
  * read from the polling thread than anything cleverer. Written by the game's own thread from
  * inside the trampoline, read by ours — plain bytes, so a torn read is impossible. */
@@ -61,6 +68,18 @@ static volatile BYTE corrupted[MAX_LEVEL];
 static volatile DWORD mark_count;
 
 static int installed;
+
+/* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first —
+ * the same call, and the same reason, as beam.c and records.c: IsBadReadPtr and
+ * VirtualQuery-then-read have each taken this game down. */
+static int safe_read(const void *at, void *into, SIZE_T bytes)
+{
+    SIZE_T got = 0;
+    if (!at) return 0;
+    return ReadProcessMemory(GetCurrentProcess(), at, into, bytes, &got) && got == bytes;
+}
+
+int corrupted_is(DWORD level);
 
 static void write_u32(BYTE *at, DWORD value)
 {
@@ -88,10 +107,57 @@ static void __cdecl on_level_marked(DWORD level, DWORD game)
     }
     last_mark = now;
 
+    hook_game = (void *)game;
     if (level < MAX_LEVEL) {
         corrupted[level] = 1;
         mark_count++;
     }
+}
+
+/* A window of the SERVER's own Level for one area, once per area, into the log.
+ *
+ * Diagnostic, and here for one open question: a map corrupted with a Worldstone Shard reads as
+ * NOT corrupted, because the calendar's marking loop is the only thing this hooks and a shard
+ * does not go through it. Which field a corrupted map differs in is not established — the area
+ * id does not say, the announced name says nothing about maps, and the monster level is already
+ * at the cap for the zones where it would matter.
+ *
+ * So rather than guess at a field, this prints the neighbourhood of the one the calendar DOES
+ * write (+0x2DC/+0x2E0, and the density at +0x2B8) for whatever area the player walks into. Play
+ * a corrupted map and a plain one and the difference is in the diff. Every read goes through
+ * ReadProcessMemory, so a wrong pointer costs a missing line.
+ *
+ * Off in a normal build: it is a question, not a feature. */
+#ifndef CORRUPTED_PROBE
+#define CORRUPTED_PROBE 1
+#endif
+
+void corrupted_probe_area(DWORD level_id)
+{
+#if CORRUPTED_PROBE
+    static BYTE reported[MAX_LEVEL];
+    DWORD level_ptr = 0, words[20];
+
+    if (!hook_game || level_id >= MAX_LEVEL || reported[level_id]) return;
+    if (!safe_read((BYTE *)hook_game + PGAME_LEVELS + level_id * 4, &level_ptr, 4)) return;
+    if (level_ptr < 0x10000) return;
+    if (!safe_read((void *)(UINT_PTR)(level_ptr + 0x2B0), words, sizeof words)) return;
+    reported[level_id] = 1;
+
+    char line[512];
+    int used = 0;
+    for (int i = 0; i < (int)(sizeof words / sizeof words[0]); i++) {
+        int wrote = _snprintf(line + used, sizeof(line) - used - 1, "%s+%03x=%lu",
+                              used ? " " : "", 0x2B0 + i * 4, (unsigned long)words[i]);
+        if (wrote < 0 || used + wrote >= (int)sizeof(line) - 1) break;
+        used += wrote;
+    }
+    line[used] = '\0';
+    log_line("probe: area %lu (marked=%d) server Level %p | %s",
+             (unsigned long)level_id, corrupted_is(level_id), (void *)(UINT_PTR)level_ptr, line);
+#else
+    (void)level_id;
+#endif
 }
 
 int corrupted_is(DWORD level)
