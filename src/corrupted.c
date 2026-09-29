@@ -88,6 +88,27 @@ static volatile DWORD game_generation;
 
 static int installed;
 
+/* The FPU/SSE state, parked across the callback.
+ *
+ * pushad and pushfd save the general-purpose registers and the flags and NOTHING ELSE, and the
+ * site this hooks sits between a load of xmm1 and its use:
+ *
+ *     1026c4d3  movss xmm1, [eax]        ; the density multiplier for a corrupted zone
+ *     1026c4de  <this hook>
+ *     1026c51e  mulss xmm0, xmm1         ; density * that
+ *     1026c52a  mov [esi+0x2b8], eax     ; written back
+ *
+ * Every XMM register is caller-saved on 32-bit x86, so the callback's GetTickCount, memset,
+ * _snprintf and WriteFile are all entitled to clobber xmm1 — and then the game multiplies a
+ * corrupted zone's monster density by whatever was left there. It did: the user noticed density
+ * dropping the day this hook shipped (2026-09-29).
+ *
+ * fxsave/fxrstor rather than picking out xmm1: liveness is the game's business, not something to
+ * re-derive from a window of disassembly, and this hook runs about five times per game. Not used
+ * for the gate hook, which fires on every blow — its callback is two stores and no calls at all.
+ */
+static __attribute__((aligned(16))) BYTE fpu_state[512];
+
 /* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first —
  * the same call, and the same reason, as beam.c and records.c: IsBadReadPtr and
  * VirtualQuery-then-read have each taken this game down. */
@@ -272,13 +293,15 @@ int corrupted_hook_install(void)
         return 0;
     }
 
-    BYTE *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    BYTE *tramp = VirtualAlloc(NULL, 128, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!tramp) {
         log_line("corrupted: could not allocate a trampoline");
         return 0;
     }
 
     int n = 0;
+    tramp[n++] = 0x0F; tramp[n++] = 0xAE; tramp[n++] = 0x05; /* fxsave [fpu_state]    */
+    write_u32(tramp + n, (DWORD)fpu_state); n += 4;
     tramp[n++] = 0x60;                                      /* pushad                 */
     tramp[n++] = 0x9C;                                      /* pushfd                 */
     tramp[n++] = 0x57;                                      /* push edi (pGame)       */
@@ -288,6 +311,8 @@ int corrupted_hook_install(void)
     tramp[n++] = 0x83; tramp[n++] = 0xC4; tramp[n++] = 0x08; /* add esp,8             */
     tramp[n++] = 0x9D;                                      /* popfd                  */
     tramp[n++] = 0x61;                                      /* popad                  */
+    tramp[n++] = 0x0F; tramp[n++] = 0xAE; tramp[n++] = 0x0D; /* fxrstor [fpu_state]   */
+    write_u32(tramp + n, (DWORD)fpu_state); n += 4;
     memcpy(tramp + n, MARK_EXPECTED, MARK_LEN); n += MARK_LEN;   /* the store itself  */
     tramp[n++] = 0xE9;                                      /* jmp rel32 back         */
     write_u32(tramp + n, (DWORD)(target + MARK_LEN) - (DWORD)(tramp + n + 4)); n += 4;
