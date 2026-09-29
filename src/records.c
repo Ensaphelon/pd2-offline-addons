@@ -7,7 +7,8 @@
  * WHAT GOES IN A LINE, AND WHO IS THE AUTHORITY FOR IT
  * ---------------------------------------------------
  *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<peak dps>\t<guid,...>\t
- *     <corrupted>\t<map stat id:value,...>\t<seconds>\t<damage>\t<hits>\t<damage per second,...>
+ *     <corrupted>\t<map stat id:value,...>\t<seconds>\t<damage>\t<hits>\t<game started at>\t
+ *     <damage per second,...>
  *
  * Tabs, because a character name can hold a space. The fields are split between the two halves by
  * who can actually know them:
@@ -32,6 +33,8 @@
  *                        from these on the other side, because a peak alone cannot tell a plateau
  *                        from a ten-second spike, and deciding WHICH rate matters should not mean
  *                        rebuilding a DLL.
+ *   game started at      which game this fragment belongs to. Leaving a map for town and coming
+ *                        back is one run of one map instance, not two — see game_started_at.
  *
  * WHEN A LINE IS WRITTEN
  * ----------------------
@@ -299,6 +302,21 @@ void records_init(void *module)
     records_path[MAX_PATH - 1] = '\0';
 }
 
+/* When the game now being played was entered, as unix seconds.
+ *
+ * A visit to an area is not a run. One map instance gets left for town and come back to, and that
+ * came out as three separate runs of the same map with three separate peaks (user, 2026-09-30).
+ * They are one run, fragmented — so each fragment carries the game it belongs to and the other
+ * side sews them back together.
+ *
+ * Deliberately not joined here. A fragment is written when the area closes, which is the moment
+ * the game writes the save and therefore the moment the gear behind it is certain; holding the
+ * pieces until the game ends would trade that for nothing, and lose everything if the game
+ * crashed. Time in town never enters it either way: nothing measures it, so there is nothing to
+ * subtract.
+ */
+static DWORD game_started_at;
+
 /* What has been seen since entering the area that is currently open.
  *
  * `armed` is what keeps the last area's fight from being credited to this one. PD2's number is a
@@ -370,12 +388,13 @@ static void flush(void)
     DWORD hits = hook_hit_count - session.hits_at_open;
     DWORD seconds = (GetTickCount() - session.start_ms) / 1000;
     int n = _snprintf(line, sizeof(line) - 1,
-                      "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\t%lu\t%lu\t%lu\t",
+                      "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\t%lu\t%lu\t%lu\t%lu\t",
                       (unsigned long)time(NULL), session.name,
                       (unsigned long)session.area, session.difficulty,
                       (unsigned long)session.players, (unsigned long)session.best,
                       session.corrupted, session.map_stats,
-                      (unsigned long)seconds, (unsigned long)damage, (unsigned long)hits);
+                      (unsigned long)seconds, (unsigned long)damage, (unsigned long)hits,
+                      (unsigned long)game_started_at);
     if (n > 0) {
         for (DWORD i = 0; i < session.sample_count; i++) {
             int wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu",
@@ -410,8 +429,11 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
 {
     if (!unit || !player_data) {
         flush();
+        /* Out of a game. The next player to appear is a new one. */
+        game_started_at = 0;
         return;
     }
+    if (game_started_at == 0) game_started_at = (DWORD)time(NULL);
 
     char name[17];
     if (!player_name(player_data, name, sizeof name)) return;
