@@ -39,6 +39,7 @@
  */
 
 #include <windows.h>
+#include <stddef.h>
 #include "log.h"
 
 /* Where the damage lands, as an offset from ProjectDiablo.dll's own base. The DLL's preferred
@@ -69,6 +70,77 @@ static const BYTE EXPECTED[] = { 0x01, 0x98, 0xA8, 0x01, 0x00, 0x00 };
 
 static const BYTE GATE_EXPECTED[] = { 0x83, 0xB9, 0xA4, 0x01, 0x00, 0x00, 0x00 };
 #define GATE_LEN (sizeof GATE_EXPECTED)
+
+/* --- WHAT TOOK THE BLOW -----------------------------------------------------------------------
+ *
+ * The amount alone cannot answer the question a record is actually asked. A second worth 100k
+ * reads as a good setup, and it is a different thing entirely when it was one unique absorbing a
+ * whole screen of damage than when it was a pack of fallen dying to splash (user, 2026-10-01). So
+ * each blow is written down with the unit it landed on.
+ *
+ * WHERE THE TARGET IS, AND HOW THAT WAS ESTABLISHED
+ * ------------------------------------------------
+ * EDI, at the hooked instruction, holds the damage context this function was handed, and
+ * `[edi+0x0C]` is the unit being hit. Not a published layout - read out of this install's own
+ * ProjectDiablo.dll (base 0x10000000), where the same word is used for three things only a target
+ * can be:
+ *
+ *   1026f512  mov eax,[edi+0xc] / mov [esp+0xc],eax     ; kept in a local for the rest
+ *   1026f59a  push [esp+0x14]  -> call 0x10273cb0(_, 6, 0)
+ *                                                       ; stat 6 is `hitpoints`, in 256ths, and
+ *   1026f5a3  shr eax,8 / cmp ebx,eax / cmovg ebx,eax   ; the damage is CLAMPED to it
+ *   1026f5e9  cmp [eax],1 / mov eax,[eax+4]             ; type 1 = monster, then its txt row,
+ *             cmp eax,0x3a7 / cmp eax,0x3a8             ; compared against MonStats 935/936 -
+ *                                                       ; rathmaBoneClone and rathmaPoisonClone,
+ *                                                       ; whose health the next lines link
+ *
+ * The clamp is the proof: a damage function clamps to the TARGET's remaining life and nothing
+ * else's. The Rathma pair then confirms the two words read here - `+0x00` is the unit type and
+ * `+0x04` is the row in its own txt file - against the game's own comparisons rather than against
+ * a document, and `+0x08` is the unit id in the same published layout (UnitAny) the rest of this
+ * plugin already reads `+0x14` and `+0x2C` out of.
+ *
+ * It also means the pointer needs no validating. The game dereferences it itself,
+ * unconditionally, eight instructions earlier - the clamp call reads its stat list - so by the
+ * time this runs it has already been proven to be a real unit. The null test below is insurance.
+ *
+ * WHY THIS IS STILL ASSEMBLY, AND WHY IT TOUCHES ONLY THREE REGISTERS
+ * ------------------------------------------------------------------
+ * A call into C from a trampoline in the middle of someone else's arithmetic cost this game its
+ * monster density for a day: the corruption hook sits between `movss xmm1,[eax]` and
+ * `mulss xmm0,xmm1`, and the callee clobbered xmm1 - every XMM register is caller-saved on 32-bit
+ * x86, so nothing was being violated except an assumption. The cure there was fxsave/fxrstor.
+ * The cure here is to have nothing to save: no call, so no ABI to obey, so no register the game
+ * is holding can be touched by anything but these fourteen instructions.
+ *
+ * They push the three they use and pop them back, so none of the liveness at the site has to be
+ * reasoned about correctly for this to be safe. Flags are destroyed, and that was checked at the
+ * site: the next instruction to read them (0x1026f5d9) is its own `test`.
+ *
+ * A ring rather than a growing list: the game's thread writes, the plugin's thread reads 66 times
+ * a second, and neither waits for the other. `head` only ever goes up, so a reader that fell more
+ * than a ring behind can SEE that it did instead of silently reading torn entries - which is why
+ * the head is published as a count rather than as an index. */
+#define HOOK_TARGET_RING 1024          /* a power of two: the trampoline masks, it cannot branch */
+#define HOOK_TARGET_MASK (HOOK_TARGET_RING - 1)
+
+typedef struct {
+    DWORD kind;          /* UnitAny+0x00: 0 player, 1 monster, 2 object, ... */
+    DWORD txt_file_no;   /* UnitAny+0x04: the row in that kind's own table */
+    DWORD unit_id;       /* UnitAny+0x08: which one of them, this game */
+    DWORD damage;        /* what the blow actually removed, overkill already off */
+} hook_target;
+
+/* 16 bytes an entry, so the trampoline indexes with a shift instead of a multiply. */
+hook_target hook_targets[HOOK_TARGET_RING];
+volatile DWORD hook_target_head;
+
+/* Where the target sits in the context EDI points at. Named rather than inlined so the
+ * disassembly above and the bytes below cannot drift apart. */
+#define CONTEXT_TARGET   0x0C
+#define UNIT_KIND        0x00
+#define UNIT_TXT_FILE_NO 0x04
+#define UNIT_ID          0x08
 
 /* The server's own player struct, as seen from inside the damage path. Published for the polling
  * thread; NULL until the first blow lands. */
@@ -120,7 +192,7 @@ int hook_install(void)
      * carry on. Hand-assembled rather than written as a C function — GCC has no `naked` on
      * i386, and a compiler-managed prologue in the middle of someone else's damage path is a
      * worse idea than twenty-three bytes of opcode. */
-    BYTE *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    BYTE *tramp = VirtualAlloc(NULL, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!tramp) {
         log_line("could not allocate a trampoline");
         return 0;
@@ -132,6 +204,46 @@ int hook_install(void)
     write_u32(tramp + n, (DWORD)&hook_damage_total); n += 4;
     tramp[n++] = 0xFF; tramp[n++] = 0x05;                     /* inc DWORD [disp32]     */
     write_u32(tramp + n, (DWORD)&hook_hit_count); n += 4;
+
+    /* ...and who it landed on. Three pushes so nothing at the site has to be dead for this to be
+     * correct; see "WHAT TOOK THE BLOW" above for where the target comes from. */
+    tramp[n++] = 0x50;                                        /* push eax               */
+    tramp[n++] = 0x53;                                        /* push ebx               */
+    tramp[n++] = 0x52;                                        /* push edx               */
+    tramp[n++] = 0x8B; tramp[n++] = 0x47; tramp[n++] = CONTEXT_TARGET;   /* mov eax,[edi+0xc] */
+    tramp[n++] = 0x85; tramp[n++] = 0xC0;                     /* test eax, eax          */
+    tramp[n++] = 0x74;                                        /* je over the block      */
+    int skip_at = n++;                                        /* rel8, filled in below  */
+    int block_from = n;
+    tramp[n++] = 0x8B; tramp[n++] = 0x15;                     /* mov edx, [head]        */
+    write_u32(tramp + n, (DWORD)&hook_target_head); n += 4;
+    tramp[n++] = 0x81; tramp[n++] = 0xE2;                     /* and edx, imm32         */
+    write_u32(tramp + n, HOOK_TARGET_MASK); n += 4;
+    tramp[n++] = 0xC1; tramp[n++] = 0xE2; tramp[n++] = 0x04;  /* shl edx, 4             */
+    tramp[n++] = 0x81; tramp[n++] = 0xC2;                     /* add edx, imm32         */
+    write_u32(tramp + n, (DWORD)hook_targets); n += 4;
+    /* The damage first, out of EBX while it still holds it; EBX is then the only scratch
+     * register this needs, because x86 cannot move memory to memory. */
+    tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+12], ebx      */
+    tramp[n++] = (BYTE)offsetof(hook_target, damage);
+    tramp[n++] = 0x8B; tramp[n++] = 0x18;                     /* mov ebx, [eax+0x00]    */
+    tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+0], ebx       */
+    tramp[n++] = (BYTE)offsetof(hook_target, kind);
+    tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_TXT_FILE_NO;  /* mov ebx,[eax+4] */
+    tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+4], ebx       */
+    tramp[n++] = (BYTE)offsetof(hook_target, txt_file_no);
+    tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_ID;           /* mov ebx,[eax+8] */
+    tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+8], ebx       */
+    tramp[n++] = (BYTE)offsetof(hook_target, unit_id);
+    /* Published only now the entry is whole. Stores are not reordered with each other on x86, so
+     * a reader that sees this count sees the entry behind it. */
+    tramp[n++] = 0xFF; tramp[n++] = 0x05;                     /* inc DWORD [head]       */
+    write_u32(tramp + n, (DWORD)&hook_target_head); n += 4;
+    tramp[skip_at] = (BYTE)(n - block_from);
+    tramp[n++] = 0x5A;                                        /* pop edx                */
+    tramp[n++] = 0x5B;                                        /* pop ebx                */
+    tramp[n++] = 0x58;                                        /* pop eax                */
+
     tramp[n++] = 0xE9;                                        /* jmp rel32 back         */
     write_u32(tramp + n, (DWORD)(target + PATCH_LEN) - (DWORD)(tramp + n + 4)); n += 4;
 

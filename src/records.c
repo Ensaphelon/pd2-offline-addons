@@ -8,7 +8,7 @@
  * ---------------------------------------------------
  *     <unix seconds>\t<character>\t<area id>\t<difficulty>\t<players>\t<peak dps>\t<guid,...>\t
  *     <corrupted>\t<map stat id:value,...>\t<seconds>\t<damage>\t<hits>\t<game started at>\t
- *     <damage per second,...>
+ *     <damage per second,...>\t<what each second went on>
  *
  * Tabs, because a character name can hold a space. The fields are split between the two halves by
  * who can actually know them:
@@ -35,6 +35,15 @@
  *                        rebuilding a DLL.
  *   game started at      which game this fragment belongs to. Leaving a map for town and coming
  *                        back is one run of one map instance, not two — see game_started_at.
+ *   what each second      who the damage went to, as
+ *   went on                   <second>[!]=<kind>:<row>:<damage>:<hits>:<instances>[,...][;...]
+ *                        One group per second that saw damage; empty seconds are left out, which
+ *                        is most of them. `kind` is UnitAny's own unit type (1 monster, 2 object)
+ *                        and `row` the row in that kind's table — named on the other side, which
+ *                        is the side that can read MonStats. `instances` is how many DIFFERENT
+ *                        ones of them were hit in that second, so "Fallen x12" is one entry. A `!`
+ *                        after the second means more kinds were hit than the plugin keeps; the
+ *                        second's own total above is still complete.
  *
  * WHEN A LINE IS WRITTEN
  * ----------------------
@@ -71,6 +80,14 @@ int corrupted_is(DWORD level);
 int hook_install(void);
 extern volatile DWORD hook_damage_total;
 extern volatile DWORD hook_hit_count;
+
+/* Who each blow landed on (hook.c). The game's thread appends to a ring and only ever raises the
+ * count; this thread reads from where it stopped. See hook.c's "WHAT TOOK THE BLOW" for how the
+ * target was found and why the hot path still contains no call. */
+#define HOOK_TARGET_RING 1024
+typedef struct { DWORD kind, txt_file_no, unit_id, damage; } hook_target;
+extern hook_target hook_targets[HOOK_TARGET_RING];
+extern volatile DWORD hook_target_head;
 void corrupted_report_once(void);
 void corrupted_probe_area(DWORD level);
 void corrupted_map_stats(char *out, int size);
@@ -84,6 +101,33 @@ void corrupted_map_stats(char *out, int size);
  * totals and stops adding detail, which is a better failure than a line nothing can read. */
 #define MAX_SAMPLES 1800
 #define SAMPLE_MS 1000
+
+/* --- Which second went on what ----------------------------------------------------------------
+ *
+ * The per-second totals say a second was worth 100k. They cannot say whether that was one unique
+ * absorbing a screenful or a pack of fallen dying to splash, and that is the difference between a
+ * setup that holds up and one that got lucky (user, 2026-10-01).
+ *
+ * So each second also keeps what it was spent ON, grouped by the kind of thing hit rather than by
+ * the individual: twelve fallen are read as "Fallen x12", which is how a player thinks about it
+ * and a twelfth of the characters. The individuals are still counted exactly, through a set of
+ * the unit ids seen in that second - a monster hit forty times in one second is one monster.
+ *
+ * Both caps are deliberate dead ends rather than approximations that creep. Past KINDS_PER_SECOND
+ * the second keeps its total and says it stopped keeping detail (the `!` in the written line);
+ * past IDS_PER_SECOND the instance count stops rising while the damage keeps adding, so a reader
+ * sees "at least this many" rather than a wrong number. Eight different kinds of monster damaged
+ * inside one second, or sixty-four individuals, is a pull nobody builds for. */
+#define KINDS_PER_SECOND 8
+#define IDS_PER_SECOND 64
+
+typedef struct {
+    DWORD kind;          /* UnitAny+0x00: 1 is a monster, 2 an object - a barrel is not a boss */
+    DWORD txt_file_no;   /* the row in that kind's own table; named on the other side */
+    DWORD damage;
+    DWORD hits;
+    DWORD instances;     /* how many different ones of them, this second */
+} target_bucket;
 
 /* Reading a live game's memory through ReadProcessMemory rather than testing the pointer first.
  * Same call, and the same reason, as beam.c: IsBadReadPtr and VirtualQuery-then-read have each
@@ -365,10 +409,98 @@ static struct {
     DWORD last_sample_damage;
     DWORD sample_count;
     DWORD samples[MAX_SAMPLES];
+
+    /* What each of those seconds was spent on. `target_tail` is this thread's own cursor into the
+     * hook's ring; `lost` counts entries the game wrote while this thread was not looking, which
+     * can only happen at more than a thousand blows between two ticks. The totals above are
+     * unaffected by a loss - they come from the hook's running sum, not from these - so a lossy
+     * run reads as a breakdown that does not add up to its own second, which is exactly what it
+     * is. */
+    DWORD target_tail;
+    DWORD lost;
+    target_bucket targets[MAX_SAMPLES][KINDS_PER_SECOND];
+    BYTE targets_full[MAX_SAMPLES];
+    /* The ids seen in the second currently being filled, and which second that is. Scratch, not
+     * history: once a second closes its instance counts are settled and the ids are of no further
+     * use. */
+    DWORD seen_second;
+    DWORD seen_ids[IDS_PER_SECOND];
+    DWORD seen_id_count;
 } session;
+
+/* Everything the hook has written since this last looked, folded into the second now being
+ * filled.
+ *
+ * Attributed at drain time rather than at the moment of the blow, so a blow can be credited to
+ * the second after the one it landed in - by at most one tick, 15ms. Carrying a timestamp per
+ * entry would fix that and cost a `GetTickCount` inside the damage path, which is the call this
+ * whole arrangement exists to avoid. */
+static void drain_targets(void)
+{
+    DWORD second = session.sample_count;
+    if (second >= MAX_SAMPLES) {
+        /* Past the half hour the run keeps its totals and stops keeping detail, same as the
+         * samples. Still drain, or the ring reports a loss that never happened. */
+        session.target_tail = hook_target_head;
+        return;
+    }
+    if (session.seen_second != second) {
+        session.seen_second = second;
+        session.seen_id_count = 0;
+    }
+
+    DWORD head = hook_target_head;
+    DWORD behind = head - session.target_tail;
+    if (behind > HOOK_TARGET_RING) {
+        session.lost += behind - HOOK_TARGET_RING;
+        session.target_tail = head - HOOK_TARGET_RING;
+    }
+
+    target_bucket *row = session.targets[second];
+    while (session.target_tail != head) {
+        hook_target entry = hook_targets[session.target_tail & (HOOK_TARGET_RING - 1)];
+        session.target_tail++;
+
+        target_bucket *bucket = NULL;
+        for (int i = 0; i < KINDS_PER_SECOND; i++) {
+            if (row[i].hits == 0) {
+                row[i].kind = entry.kind;
+                row[i].txt_file_no = entry.txt_file_no;
+                bucket = &row[i];
+                break;
+            }
+            if (row[i].kind == entry.kind && row[i].txt_file_no == entry.txt_file_no) {
+                bucket = &row[i];
+                break;
+            }
+        }
+        if (!bucket) {
+            /* Nine different kinds of thing hit inside one second. The second's own total still
+             * holds every point of it; only the breakdown stops here, and says so. */
+            session.targets_full[second] = 1;
+            continue;
+        }
+        bucket->damage += entry.damage;
+        bucket->hits++;
+
+        /* One monster hit forty times is one monster. A unit id belongs to exactly one unit, so
+         * one set for the whole second answers this for every bucket in it. */
+        int known = 0;
+        for (DWORD i = 0; i < session.seen_id_count; i++) {
+            if (session.seen_ids[i] == entry.unit_id) { known = 1; break; }
+        }
+        if (!known && session.seen_id_count < IDS_PER_SECOND) {
+            session.seen_ids[session.seen_id_count++] = entry.unit_id;
+            bucket->instances++;
+        }
+    }
+}
 
 static void flush(void)
 {
+    /* The last blows of this area are still in the ring: the hook writes as the game resolves
+     * damage, and a door can close between that and the next tick. */
+    if (session.open) drain_targets();
     if (!session.open || session.best == 0 || records_path[0] == '\0') {
         session.open = 0;
         return;
@@ -381,9 +513,11 @@ static void flush(void)
         session.open = 0;
         return;
     }
-    /* Big, and static: a half-hour run is some twelve thousand characters of samples, and this
-     * runs on one thread. */
-    static char line[32768];
+    /* Big, and static: a half-hour run is some twelve thousand characters of samples and up to ten
+     * times that in breakdown, and this runs on one thread. The write stops at the end of the
+     * buffer rather than wrapping or truncating mid-number, so the worst a run too long for it can
+     * produce is a line with fewer seconds of detail than it had. */
+    static char line[262144];
     DWORD damage = hook_damage_total - session.damage_at_open;
     DWORD hits = hook_hit_count - session.hits_at_open;
     DWORD seconds = (GetTickCount() - session.start_ms) / 1000;
@@ -402,6 +536,30 @@ static void flush(void)
             if (wrote < 0 || n + wrote >= (int)sizeof(line) - 2) break;
             n += wrote;
         }
+        /* And what each of those seconds was spent on. Only the seconds that saw damage appear, so
+         * a run spent mostly walking costs almost nothing here. */
+        if (n < (int)sizeof(line) - 2) line[n++] = '\t';
+        int first_group = 1;
+        for (DWORD i = 0; i < session.sample_count; i++) {
+            if (session.targets[i][0].hits == 0) continue;
+            int wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu%s=",
+                                  first_group ? "" : ";", (unsigned long)i,
+                                  session.targets_full[i] ? "!" : "");
+            if (wrote < 0 || n + wrote >= (int)sizeof(line) - 2) break;
+            n += wrote;
+            first_group = 0;
+            for (int k = 0; k < KINDS_PER_SECOND; k++) {
+                target_bucket *bucket = &session.targets[i][k];
+                if (bucket->hits == 0) break;
+                wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu:%lu:%lu:%lu:%lu",
+                                  k ? "," : "", (unsigned long)bucket->kind,
+                                  (unsigned long)bucket->txt_file_no,
+                                  (unsigned long)bucket->damage, (unsigned long)bucket->hits,
+                                  (unsigned long)bucket->instances);
+                if (wrote < 0 || n + wrote >= (int)sizeof(line) - 2) break;
+                n += wrote;
+            }
+        }
         line[n++] = '\n';
         line[n] = '\0';
         HANDLE h = CreateFileA(records_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -411,12 +569,18 @@ static void flush(void)
             WriteFile(h, line, (DWORD)n, &written, NULL);
             CloseHandle(h);
             log_line("records: %s in area %lu%s on /players %lu — peak %lu, %lu damage over "
-                     "%lus in %lu hits, %lu samples",
+                     "%lus in %lu hits, %lu samples%s",
                      session.name, (unsigned long)session.area,
                      session.corrupted ? " (corrupted)" : "", (unsigned long)session.players,
                      (unsigned long)session.best, (unsigned long)damage,
                      (unsigned long)seconds, (unsigned long)hits,
-                     (unsigned long)session.sample_count);
+                     (unsigned long)session.sample_count,
+                     session.lost ? " (some targets went unrecorded)" : "");
+            if (session.lost) {
+                log_line("records: %lu damage events outran the ring — the breakdown for this "
+                         "run is short by that many, the totals are not",
+                         (unsigned long)session.lost);
+            }
         }
     }
     session.open = 0;
@@ -467,6 +631,16 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
         session.last_sample_ms = now;
         session.last_sample_damage = hook_damage_total;
         session.sample_count = 0;
+        /* Whatever is in the ring was dealt in the area just left, and was drained into it by the
+         * flush above. Starting from the live head rather than from zero is what keeps the tail of
+         * one area's fight out of the next one's first second - the same thing `armed` does for
+         * the meter's own average, for the same reason. */
+        session.target_tail = hook_target_head;
+        session.lost = 0;
+        session.seen_second = (DWORD)-1;
+        session.seen_id_count = 0;
+        memset(session.targets, 0, sizeof session.targets);
+        memset(session.targets_full, 0, sizeof session.targets_full);
         memcpy(session.name, name, sizeof name);
     }
     session.players = player_count();
@@ -476,6 +650,9 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
     session.corrupted = corrupted_is(area);
     corrupted_map_stats(session.map_stats, sizeof session.map_stats);
     corrupted_probe_area(area);
+    /* Who the damage went to, into the second now being filled - before that second is closed
+     * below, so the detail and the total end up on the same side of the boundary. */
+    drain_targets();
     /* A second's worth of damage, whether or not the meter has armed: arming is about the
      * meter's smoothed average, and this is not that. */
     while (now - session.last_sample_ms >= SAMPLE_MS) {

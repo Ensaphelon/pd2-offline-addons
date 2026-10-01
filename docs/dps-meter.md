@@ -333,6 +333,75 @@ all it takes. Ten bytes is a roomy landing site, and `mov` sets no flags.
 The set is cleared when a mark arrives long after the last one: a group is written in one tight
 loop, so its own marks land microseconds apart while the next game's run is a whole game away.
 
+### Who took the damage
+
+A second worth 100k reads as a good setup. It is a different thing when it was one unique
+absorbing a whole screen of damage than when it was a pack of fallen dying to splash, and the
+totals cannot tell those apart (user, 2026-10-01). So every blow is written down with the unit it
+landed on, and each second of a run carries what it was spent on:
+
+```
+<second>[!]=<kind>:<row>:<damage>:<hits>:<instances>[,...][;<second>=...]
+```
+
+`kind` is `UnitAny+0x00` — 1 a monster, 2 an object, so a barrel is never mistaken for a boss —
+and `row` is the row in that kind's own table, left for the side that can read MonStats. Only the
+seconds that saw damage appear, which on a real run is a minority of them. `instances` is how many
+**different** ones of that kind were hit in the second, so twelve fallen are one entry rather than
+twelve, and a monster hit forty times is still one monster.
+
+#### Where the target comes from
+
+At the hooked instruction EDI holds the damage context, and `[edi+0x0C]` is the unit being hit.
+That is not a published layout — it was read out of this install, where the same word is used for
+three things only a target can be:
+
+```asm
+1026f512  mov eax,[edi+0xc] / mov [esp+0xc],eax     ; kept in a local for the rest of the function
+1026f59a  push [esp+0x14] -> call 0x10273cb0(_,6,0) ; stat 6 is `hitpoints`, in 256ths...
+1026f5a3  shr eax,8 / cmp ebx,eax / cmovg ebx,eax   ; ...and the damage is CLAMPED to it
+1026f5e9  cmp [eax],1 / mov eax,[eax+4]             ; type 1 = monster, then its txt row,
+          cmp eax,0x3a7 / cmp eax,0x3a8             ; compared against MonStats 935 and 936
+```
+
+The clamp is the proof: a damage function clamps to the **target's** remaining life and nothing
+else's. The pair at the bottom then confirms the two words this reads — `+0x00` the unit type,
+`+0x04` the row — against the game's own comparisons rather than against a document: MonStats 935
+and 936 are `rathmaBoneClone` and `rathmaPoisonClone`, and the lines after that comparison move
+health from one to the other. Two clones sharing a life pool, which is exactly what that code
+is for.
+
+It also means the pointer needs no validating. The game dereferences it itself, unconditionally,
+eight instructions earlier.
+
+#### Why it is still assembly
+
+A call into C from a trampoline in the middle of someone else's arithmetic cost this game its
+monster density for a day — see "Corrupted zones" above. The cure there was `fxsave`/`fxrstor`.
+The cure here is to have nothing to save: fourteen instructions, no call, so no ABI to obey. They
+push the three registers they use and pop them back, so nothing about which registers are live at
+the site has to be reasoned about correctly for this to be safe. Flags are destroyed, and that was
+checked at the site — the next instruction to read them, at `1026f5d9`, is its own `test`.
+
+The entries go into a 1024-slot ring that the game's thread appends to and the plugin's own thread
+drains 66 times a second. The published cursor is a **count**, not an index, so a reader that fell
+more than a ring behind can see that it did rather than silently read torn entries; when that
+happens the line's totals are still complete (they come from the hook's running sum) and only the
+breakdown is short, which is what the log says.
+
+#### What it does not know
+
+* **Which one of them it was.** A unique, a champion and a trash mob of the same kind share a
+  MonStats row, so a boss shows up under the base monster's name. Telling them apart means reading
+  `MonsterData` (`UnitAny+0x14`), whose layout has not been established on this install.
+* **More than eight kinds in one second**, or more than sixty-four individuals. Past the first the
+  second says so with a `!` and keeps its total; past the second the instance count stops rising
+  while the damage keeps adding, so it reads as "at least this many". Both are deliberate dead
+  ends rather than approximations that creep.
+* **Who dealt it.** PD2's own meter counts the player's damage only — its gate checks that the
+  attacker is a player with a `PlayerData` — so a mercenary's and a minion's damage is in neither
+  the total nor the breakdown.
+
 ### What is not written
 
 The guid list. The app falls back to the save for what was equipped, which is right nearly always
