@@ -389,6 +389,29 @@ more than a ring behind can see that it did rather than silently read torn entri
 happens the line's totals are still complete (they come from the hook's running sum) and only the
 breakdown is short, which is what the log says.
 
+#### Time the game was not running
+
+A run paused in the middle is not a run that long. One sat paused for a stretch and came back as
+fourteen minutes with a sustained figure to match (user, 2026-10-01), and nothing in the damage can
+tell a pause from a walk across an empty map: both are seconds with nothing in them.
+
+The game's own clock can, and this install says where it is:
+
+```asm
+1026f5bc  mov eax,[ecx+0x80] / mov eax,[eax+0xa8] / mov [ecx_playerdata+0x265],eax
+102cb19e  mov ebx,[edi+0x80]  ... mov ecx,ebx / call 0x102ecd40
+```
+
+The first is the damage path storing that word as the DPS window's start — which PD2 compares
+against +125 for five seconds, so it is a tick at 25 per second. The second hands the same `+0x80`
+to the game's own find-a-unit-by-id call, whose first argument is `pGame`. So `UnitAny+0x80` is the
+game and `pGame+0xA8` is its tick.
+
+A second in which that tick does not move is a second the game was not playing. It is left out of
+the samples entirely rather than written down as a zero — it is not a second of the run — and the
+run's own length has it subtracted. If the tick ever reads zero nothing is subtracted and the run
+is counted exactly as it was before.
+
 #### What it does not know
 
 * **Which one of them it was.** A unique, a champion and a trash mob of the same kind share a

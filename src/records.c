@@ -183,6 +183,28 @@ static int read_ptr(const void *at, DWORD offset, DWORD *out)
 #define UNIT_TYPE        0x00
 #define UNIT_PATH        0x2C     /* confirmed: beam.c reads the player's position through it */
 #define UNIT_ACT         0x18     /* 0..4, logged beside the level id as a sanity reading */
+
+/* --- Whether the game is actually running ------------------------------------------------------
+ *
+ * A run with the game paused in the middle of it is not a run that long. One sat paused for a
+ * stretch and came back as fourteen minutes with a sustained figure to match (user, 2026-10-01),
+ * and nothing in the damage can tell a pause from a walk: both are seconds with no damage in them.
+ *
+ * The game's own clock can. Two sites in this install's ProjectDiablo.dll say what it is and where:
+ *
+ *   1026f5bc  mov eax,[ecx+0x80] / mov eax,[eax+0xa8] / mov [ecx_playerdata+0x265],eax
+ *   102cb19e  mov ebx,[edi+0x80]  ... mov ecx,ebx / call 0x102ecd40
+ *
+ * The first is the damage path storing that word as the DPS window's start — which PD2 compares
+ * against +125 for five seconds, so it is a tick at 25 per second. The second passes the same
+ * `+0x80` to the game's own find-a-unit-by-id call, whose first argument is pGame. So `UnitAny+0x80`
+ * is the game and `pGame+0xA8` is its tick, and a second in which it did not move is a second the
+ * game was not playing.
+ *
+ * Read through safe_read like everything else here, and only trusted when it reads non-zero: if
+ * this ever comes back empty the run is counted exactly as it was before. */
+#define UNIT_GAME        0x80
+#define GAME_TICK        0xA8
 #define ROOM1_IN_ROOM2   0x30
 #define ROOM2FIRST_IN_LEVEL 0x10
 
@@ -222,6 +244,15 @@ static int walk(const BYTE *unit, int i_room1, int i_room2, int i_level, int str
     }
     *out_level = level;
     return 1;
+}
+
+/* The game's own tick, or 0 when it cannot be read. */
+static DWORD game_tick(const BYTE *unit)
+{
+    DWORD game = 0, tick = 0;
+    if (!read_ptr(unit, UNIT_GAME, &game)) return 0;
+    if (!safe_read((const BYTE *)(UINT_PTR)game + GAME_TICK, &tick, 4)) return 0;
+    return tick;
 }
 
 /* The level the player is standing in, or 0 when it cannot be established. */
@@ -414,6 +445,11 @@ static struct {
     DWORD hits_at_open;
     DWORD last_sample_ms;
     DWORD last_sample_damage;
+    /* The game's tick as of the last second that closed, and how long it has stood still. A paused
+     * second is left out of the samples entirely rather than recorded as a zero: it is not a
+     * second of the run, and a run is judged by its own length. */
+    DWORD last_tick;
+    DWORD paused_ms;
     DWORD sample_count;
     DWORD samples[MAX_SAMPLES];
 
@@ -529,7 +565,9 @@ static void flush(void)
     static char line[262144];
     DWORD damage = hook_damage_total - session.damage_at_open;
     DWORD hits = hook_hit_count - session.hits_at_open;
-    DWORD seconds = (GetTickCount() - session.start_ms) / 1000;
+    /* Time the game spent not running is not time in the area. */
+    DWORD elapsed = GetTickCount() - session.start_ms;
+    DWORD seconds = (elapsed > session.paused_ms ? elapsed - session.paused_ms : 0) / 1000;
     int n = _snprintf(line, sizeof(line) - 1,
                       "%lu\t%s\t%lu\t%d\t%lu\t%lu\t\t%d\t%s\t%lu\t%lu\t%lu\t%lu\t",
                       (unsigned long)time(NULL), session.name,
@@ -587,6 +625,10 @@ static void flush(void)
                      (unsigned long)seconds, (unsigned long)hits,
                      (unsigned long)session.sample_count,
                      session.lost ? " (some targets went unrecorded)" : "");
+            if (session.paused_ms) {
+                log_line("records: %lus of that was the game standing still and is not counted",
+                         (unsigned long)(session.paused_ms / 1000));
+            }
             if (session.lost) {
                 log_line("records: %lu damage events outran the ring — the breakdown for this "
                          "run is short by that many, the totals are not",
@@ -641,6 +683,8 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
         session.hits_at_open = hook_hit_count;
         session.last_sample_ms = now;
         session.last_sample_damage = hook_damage_total;
+        session.last_tick = game_tick(unit);
+        session.paused_ms = 0;
         session.sample_count = 0;
         /* Whatever is in the ring was dealt in the area just left, and was drained into it by the
          * flush above. Starting from the live head rather than from zero is what keeps the tail of
@@ -668,9 +712,16 @@ void records_tick(const BYTE *unit, const BYTE *player_data, DWORD average, DWOR
      * meter's smoothed average, and this is not that. */
     while (now - session.last_sample_ms >= SAMPLE_MS) {
         DWORD total = hook_damage_total;
-        if (session.sample_count < MAX_SAMPLES) {
+        DWORD tick = game_tick(unit);
+        if (tick != 0 && tick == session.last_tick) {
+            /* Not one frame in a whole second. The game was paused, or minimised far enough that
+             * it stopped simulating — either way nothing could have happened, so the second does
+             * not belong to the run. */
+            session.paused_ms += SAMPLE_MS;
+        } else if (session.sample_count < MAX_SAMPLES) {
             session.samples[session.sample_count++] = total - session.last_sample_damage;
         }
+        session.last_tick = tick;
         session.last_sample_damage = total;
         session.last_sample_ms += SAMPLE_MS;
     }
