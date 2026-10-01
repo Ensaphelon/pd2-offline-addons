@@ -36,12 +36,14 @@
  *   game started at      which game this fragment belongs to. Leaving a map for town and coming
  *                        back is one run of one map instance, not two — see game_started_at.
  *   what each second      who the damage went to, as
- *   went on                   <second>[!]=<kind>:<row>:<damage>:<hits>:<instances>[,...][;...]
+ *   went on                   <second>[!]=<kind>:<row>:<damage>:<hits>:<instances>:<flags>[,...]
  *                        One group per second that saw damage; empty seconds are left out, which
  *                        is most of them. `kind` is UnitAny's own unit type (1 monster, 2 object)
  *                        and `row` the row in that kind's table — named on the other side, which
  *                        is the side that can read MonStats. `instances` is how many DIFFERENT
- *                        ones of them were hit in that second, so "Fallen x12" is one entry. A `!`
+ *                        ones of them were hit in that second, so "Fallen x12" is one entry.
+ *                        `flags` is MonsterData+0x16 raw, which is the only thing that tells an
+ *                        elite from the pack it stands in — they share a row. A `!`
  *                        after the second means more kinds were hit than the plugin keeps; the
  *                        second's own total above is still complete.
  *
@@ -85,7 +87,7 @@ extern volatile DWORD hook_hit_count;
  * count; this thread reads from where it stopped. See hook.c's "WHAT TOOK THE BLOW" for how the
  * target was found and why the hot path still contains no call. */
 #define HOOK_TARGET_RING 1024
-typedef struct { DWORD kind, txt_file_no, unit_id, damage; } hook_target;
+typedef struct { DWORD kind, txt_file_no, unit_id, damage, flags, _pad[3]; } hook_target;
 extern hook_target hook_targets[HOOK_TARGET_RING];
 extern volatile DWORD hook_target_head;
 void corrupted_report_once(void);
@@ -124,6 +126,11 @@ void corrupted_map_stats(char *out, int size);
 typedef struct {
     DWORD kind;          /* UnitAny+0x00: 1 is a monster, 2 an object - a barrel is not a boss */
     DWORD txt_file_no;   /* the row in that kind's own table; named on the other side */
+    /* MonsterData+0x16, raw. Part of the KEY and not a note beside it: a champion, a unique pack
+     * leader and a super unique all share their base monster's row, so a pack and the elite
+     * standing in the middle of it are the same `txt_file_no` and have to be told apart by this
+     * or not at all - which is exactly what went missing the first time (user, 2026-10-01). */
+    DWORD flags;
     DWORD damage;
     DWORD hits;
     DWORD instances;     /* how many different ones of them, this second */
@@ -466,10 +473,12 @@ static void drain_targets(void)
             if (row[i].hits == 0) {
                 row[i].kind = entry.kind;
                 row[i].txt_file_no = entry.txt_file_no;
+                row[i].flags = entry.flags;
                 bucket = &row[i];
                 break;
             }
-            if (row[i].kind == entry.kind && row[i].txt_file_no == entry.txt_file_no) {
+            if (row[i].kind == entry.kind && row[i].txt_file_no == entry.txt_file_no
+                && row[i].flags == entry.flags) {
                 bucket = &row[i];
                 break;
             }
@@ -551,11 +560,13 @@ static void flush(void)
             for (int k = 0; k < KINDS_PER_SECOND; k++) {
                 target_bucket *bucket = &session.targets[i][k];
                 if (bucket->hits == 0) break;
-                wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu:%lu:%lu:%lu:%lu",
+                /* The flags go LAST so a line written by this plugin still reads on an app that
+                 * only knows the five fields before them. */
+                wrote = _snprintf(line + n, sizeof(line) - n - 2, "%s%lu:%lu:%lu:%lu:%lu:%lu",
                                   k ? "," : "", (unsigned long)bucket->kind,
                                   (unsigned long)bucket->txt_file_no,
                                   (unsigned long)bucket->damage, (unsigned long)bucket->hits,
-                                  (unsigned long)bucket->instances);
+                                  (unsigned long)bucket->instances, (unsigned long)bucket->flags);
                 if (wrote < 0 || n + wrote >= (int)sizeof(line) - 2) break;
                 n += wrote;
             }

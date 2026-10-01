@@ -127,20 +127,66 @@ static const BYTE GATE_EXPECTED[] = { 0x83, 0xB9, 0xA4, 0x01, 0x00, 0x00, 0x00 }
 typedef struct {
     DWORD kind;          /* UnitAny+0x00: 0 player, 1 monster, 2 object, ... */
     DWORD txt_file_no;   /* UnitAny+0x04: the row in that kind's own table */
-    DWORD unit_id;       /* UnitAny+0x08: which one of them, this game */
+    DWORD unit_id;       /* UnitAny+0x0C: which one of them, this game */
     DWORD damage;        /* what the blow actually removed, overkill already off */
+    DWORD flags;         /* MonsterData+0x16 for a monster, 0 for anything else */
+    DWORD _pad[3];       /* 32 bytes an entry, so the trampoline scales with one shift */
 } hook_target;
 
-/* 16 bytes an entry, so the trampoline indexes with a shift instead of a multiply. */
 hook_target hook_targets[HOOK_TARGET_RING];
 volatile DWORD hook_target_head;
 
-/* Where the target sits in the context EDI points at. Named rather than inlined so the
- * disassembly above and the bytes below cannot drift apart. */
+/* The trampoline scales its index with `shl edx,5`, which is only the size of an entry for as
+ * long as an entry is 32 bytes. A field added without the padding adjusted would silently write
+ * every entry over the next one's tail, so it fails the build instead. */
+typedef char hook_target_is_32_bytes[(sizeof(hook_target) == 32) ? 1 : -1];
+
+/* Where the target sits in the context EDI points at, and what is worth reading off it. Named
+ * rather than inlined so the disassembly above and the bytes below cannot drift apart. */
 #define CONTEXT_TARGET   0x0C
 #define UNIT_KIND        0x00
 #define UNIT_TXT_FILE_NO 0x04
-#define UNIT_ID          0x08
+
+/* WHICH ONE OF THEM IT WAS, and how that offset was settled.
+ *
+ * The first version of this read the unit id at `+0x08` and every pack in the game came back as
+ * one monster: a second with seventy-five blows in it reported a single individual (user,
+ * 2026-10-01, after killing an elite among a pack and not finding it). `+0x08` is not the id — it
+ * is the unused word before it.
+ *
+ * The id is at `+0x0C`, and that follows from a field this plugin already depends on rather than
+ * from a document. UnitAny's union — PlayerData for a player, MonsterData for a monster — sits at
+ * `+0x14`: dps.c reaches the meter's own fields through it on the player, and D2Client reaches the
+ * monster flags through it on a monster (see below). For the union to land on 0x14 the four words
+ * before it must be type (0x00), txt file no (0x04), an unused word (0x08) and the id (0x0C). Put
+ * the id at 0x08 instead and the union lands on 0x10 — where nothing this plugin does would work,
+ * and it demonstrably does. */
+#define UNIT_ID          0x0C
+
+/* WHETHER IT WAS AN ORDINARY ONE.
+ *
+ * A champion, a unique pack leader and a super unique all share their base monster's MonStats row,
+ * so the row alone cannot tell "Defiled Warrior" from the elite standing in the middle of twelve
+ * of them — which is the one anybody wants to see.
+ *
+ * What tells them apart is a bit-field byte at `MonsterData+0x16`. D2Client.dll holds five tiny
+ * accessors for it, at 0x6fafc0b0, c0d0, c0f0, c110 and c130, each one a copy of the same shape:
+ *
+ *     test ecx,ecx / je .no            ; no unit
+ *     mov eax,[ecx] / cmp eax,1 / jne .no   ; and it has to BE a monster
+ *     mov eax,[ecx+0x14] / test eax,eax / je .no   ; its MonsterData
+ *     movzbl 0x16(%eax),%eax / shr eax,N / and eax,1 / ret   ; one bit of it
+ *
+ * with N = 1, 4, 3, 6 and 2. Five independent functions agreeing on the offset, every one of them
+ * gating on the unit being a monster first, is as close to a definition as this gets without
+ * source.
+ *
+ * The byte is carried out RAW. Which bit means champion and which means super unique is named on
+ * the other side, where being wrong shows up as a mislabel rather than as a wrong number, and
+ * where it can be corrected without rebuilding a DLL. */
+#define UNIT_DATA        0x14
+#define MONSTER_FLAGS    0x16
+#define UNIT_KIND_MONSTER 1
 
 /* The server's own player struct, as seen from inside the damage path. Published for the polling
  * thread; NULL until the first blow lands. */
@@ -219,7 +265,7 @@ int hook_install(void)
     write_u32(tramp + n, (DWORD)&hook_target_head); n += 4;
     tramp[n++] = 0x81; tramp[n++] = 0xE2;                     /* and edx, imm32         */
     write_u32(tramp + n, HOOK_TARGET_MASK); n += 4;
-    tramp[n++] = 0xC1; tramp[n++] = 0xE2; tramp[n++] = 0x04;  /* shl edx, 4             */
+    tramp[n++] = 0xC1; tramp[n++] = 0xE2; tramp[n++] = 0x05;  /* shl edx, 5             */
     tramp[n++] = 0x81; tramp[n++] = 0xC2;                     /* add edx, imm32         */
     write_u32(tramp + n, (DWORD)hook_targets); n += 4;
     /* The damage first, out of EBX while it still holds it; EBX is then the only scratch
@@ -232,9 +278,34 @@ int hook_install(void)
     tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_TXT_FILE_NO;  /* mov ebx,[eax+4] */
     tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+4], ebx       */
     tramp[n++] = (BYTE)offsetof(hook_target, txt_file_no);
-    tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_ID;           /* mov ebx,[eax+8] */
+    tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_ID;           /* mov ebx,[eax+0xc] */
     tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+8], ebx       */
     tramp[n++] = (BYTE)offsetof(hook_target, unit_id);
+
+    /* And, for a monster, the byte that says whether it was an ordinary one. Written as zero
+     * first so an object or a player leaves a clean entry rather than the last monster's flags,
+     * then filled in along exactly the path D2Client's own accessors take: monster, non-null
+     * MonsterData, byte at +0x16. */
+    tramp[n++] = 0xC7; tramp[n++] = 0x42;                     /* mov [edx+16], 0        */
+    tramp[n++] = (BYTE)offsetof(hook_target, flags);
+    write_u32(tramp + n, 0); n += 4;
+    tramp[n++] = 0x83; tramp[n++] = 0x38;                     /* cmp DWORD [eax], 1     */
+    tramp[n++] = UNIT_KIND_MONSTER;
+    tramp[n++] = 0x75;                                        /* jne over the flag read */
+    int not_monster_at = n++;
+    int flag_block_from = n;
+    tramp[n++] = 0x8B; tramp[n++] = 0x58; tramp[n++] = UNIT_DATA;  /* mov ebx,[eax+0x14] */
+    tramp[n++] = 0x85; tramp[n++] = 0xDB;                     /* test ebx, ebx          */
+    tramp[n++] = 0x74;                                        /* je over the flag read  */
+    int no_data_at = n++;
+    int data_block_from = n;
+    tramp[n++] = 0x0F; tramp[n++] = 0xB6; tramp[n++] = 0x5B;  /* movzx ebx,[ebx+0x16]   */
+    tramp[n++] = MONSTER_FLAGS;
+    tramp[n++] = 0x89; tramp[n++] = 0x5A;                     /* mov [edx+16], ebx      */
+    tramp[n++] = (BYTE)offsetof(hook_target, flags);
+    tramp[no_data_at] = (BYTE)(n - data_block_from);
+    tramp[not_monster_at] = (BYTE)(n - flag_block_from);
+
     /* Published only now the entry is whole. Stores are not reordered with each other on x86, so
      * a reader that sees this count sees the entry behind it. */
     tramp[n++] = 0xFF; tramp[n++] = 0x05;                     /* inc DWORD [head]       */

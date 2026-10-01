@@ -341,7 +341,7 @@ totals cannot tell those apart (user, 2026-10-01). So every blow is written down
 landed on, and each second of a run carries what it was spent on:
 
 ```
-<second>[!]=<kind>:<row>:<damage>:<hits>:<instances>[,...][;<second>=...]
+<second>[!]=<kind>:<row>:<damage>:<hits>:<instances>:<flags>[,...][;<second>=...]
 ```
 
 `kind` is `UnitAny+0x00` — 1 a monster, 2 an object, so a barrel is never mistaken for a boss —
