@@ -1,5 +1,7 @@
-# The DLL is committed so a player does not need a cross-compiler to install it. Never diffed,
-# never line-ending-normalised.
+# Binaries: never diffed, never line-ending-normalised. These rules cover the ones that ARE
+# tracked — assets/Restart.dc6 is the only one today. The plugin's own pd2addons.dll is not: the
+# merge that made one DLL out of three also added *.dll to .gitignore, so installing means
+# building it first (see README). The three predecessors each shipped theirs; this one does not.
 *.dll binary
 *.exe binary
 *.dc6 binary

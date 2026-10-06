@@ -66,10 +66,17 @@ python3 -m pd2_offline_addons install   --game "<path to>/ProjectD2/Game.exe"
 python3 -m pd2_offline_addons uninstall --game "<path to>/ProjectD2/Game.exe"
 ```
 
+`./build.sh` comes first and is not optional: `pd2addons.dll` is ignored by git rather than
+committed, so a fresh clone has no binary for `install` to copy.
+
 The game must not be running, and the installer checks rather than taking anyone's word for it
 (`tasklist` on Windows, `pgrep` elsewhere — an inability to tell counts as running). `status`
 reads the real import table rather than remembering what it did last time, because a PD2 update
 replaces `Game.exe` and silently takes the install with it.
+
+`beam.txt` is not something the installer copies — the beam runs on the values compiled into it.
+Copy it next to `pd2addons.dll` in `ProjectD2/` to get the tunable version back, which is the
+whole point of it being re-read while the game runs.
 
 ## Status
 
