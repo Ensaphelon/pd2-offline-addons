@@ -8,6 +8,7 @@ happens to carry the game's path as an argument.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 # Deliberately NOT a generic substring like "Diablo II" or "PlugY": both appear inside our own
@@ -25,7 +26,20 @@ _SELF_PROCESS_MARKERS = ("pd2_offline_addons",)
 
 def is_game_running() -> bool | None:
     """True/False if determinable, None if this platform has no way to check (caller must then
-    treat the precondition as unsatisfied — never assume "not running" from an inability to check)."""
+    treat the precondition as unsatisfied — never assume "not running" from an inability to check).
+
+    Two probes, because `pgrep` does not exist on Windows. This had only the POSIX one until
+    2026-10-06, so installing on native Windows always answered None — and since __main__ reads
+    anything but a plain False as "running", the installer simply refused every time, with a
+    message blaming the game. Carried over from pd2-holy-inventory's own copy, which grew the
+    Windows branch on 2026-09-23.
+    """
+    if os.name == "nt":
+        return _windows_game_running()
+    return _posix_game_running()
+
+
+def _posix_game_running() -> bool | None:
     try:
         result = subprocess.run(
             ["pgrep", "-fli", "|".join(_GAME_PROCESS_PATTERNS)],
@@ -40,6 +54,33 @@ def is_game_running() -> bool | None:
         return False
     matches = [line for line in result.stdout.splitlines() if _line_is_the_game(line)]
     return len(matches) > 0
+
+
+def _windows_game_running() -> bool | None:
+    """The same question asked of Windows' own task list.
+
+    `tasklist` reports the IMAGE NAME only, never a command line, so none of the argv[0] care
+    _line_is_the_game takes is needed or possible here — and by the same token our own Python
+    process can't be mistaken for the game, since it is not called Game.exe.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    wanted = {name.lower() for name in _GAME_PROCESS_PATTERNS}
+    for line in result.stdout.splitlines():
+        image = line.strip().strip('"').split('","')[0].strip().lower()
+        if image in wanted:
+            return True
+    return False
 
 
 def _line_is_the_game(line: str) -> bool:

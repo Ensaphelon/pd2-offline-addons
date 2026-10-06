@@ -1,0 +1,12 @@
+# The DLL is committed so a player does not need a cross-compiler to install it. Never diffed,
+# never line-ending-normalised.
+*.dll binary
+*.exe binary
+*.dc6 binary
+*.png binary
+
+# The DLL reads these at runtime, and it reads them on Windows, where CRLF is ordinary — the
+# parsers tolerate either (sscanf stops at whitespace). Pinned to LF anyway so a diff between two
+# machines is about the content.
+*.txt text eol=lf
+*.sh text eol=lf

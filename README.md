@@ -52,8 +52,12 @@ game sprite drawn over a dropped item. Those are the expensive parts to rediscov
 
 ## Building and installing
 
-Needs `mingw-w64` (`brew install mingw-w64`) — the game is a 32-bit process, so the target is
-i686 and that is not negotiable.
+The game is a 32-bit process, so the target is i686 and that is not negotiable.
+
+- **macOS** — `brew install mingw-w64`, then `./build.sh`
+- **Windows** — install MSYS2 and `pacman -S mingw-w64-i686-gcc`, then run `./build.sh` from the
+  **MINGW32** shell. The script already honours `CC`, so a differently-named compiler is
+  `CC=gcc ./build.sh`.
 
 ```sh
 ./build.sh
@@ -62,8 +66,10 @@ python3 -m pd2_offline_addons install   --game "<path to>/ProjectD2/Game.exe"
 python3 -m pd2_offline_addons uninstall --game "<path to>/ProjectD2/Game.exe"
 ```
 
-The game must not be running. `status` reads the real import table rather than remembering what
-it did last time, because a PD2 update replaces `Game.exe` and silently takes the install with it.
+The game must not be running, and the installer checks rather than taking anyone's word for it
+(`tasklist` on Windows, `pgrep` elsewhere — an inability to tell counts as running). `status`
+reads the real import table rather than remembering what it did last time, because a PD2 update
+replaces `Game.exe` and silently takes the install with it.
 
 ## Status
 
