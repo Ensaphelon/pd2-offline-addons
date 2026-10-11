@@ -143,7 +143,10 @@ static DWORD WINAPI restart_thread(LPVOID difficulty_arg)
         Sleep(100);
 
         if (*D2WIN_VAR(d2_control *, OFF_D2WIN_FIRSTCONTROL) == NULL) {
-            log_line("restart: in the game — this character has only one difficulty");
+            /* Either a character who is never asked, or a popup somebody answered by hand before
+               this loop got to it. Both mean the game is running and there is nothing left to do;
+               only one of them is about difficulties, so this no longer claims to know which. */
+            log_line("restart: the game started — nothing left to choose");
             chose = 1;
             break;
         }
@@ -151,9 +154,21 @@ static DWORD WINAPI restart_thread(LPVOID difficulty_arg)
         int popup = 0;
         for (d2_control *c = *D2WIN_VAR(d2_control *, OFF_D2WIN_FIRSTCONTROL); c; c = c->next)
             if (c->type == 6 && c->state == STATE_POPUP && c->on_press) popup++;
-        if (popup >= 3) {
+        /* The popup offers only what this character has actually unlocked: two buttons once
+           Nightmare is open, three only once Hell is. Waiting for three left a Nightmare
+           character's own popup unrecognised — the driver sat out its full timeout while the
+           popup stood on screen, the player answered it by hand, and the emptied control list
+           above then logged it as having gone straight into the game (user, 2026-10-11: Narien,
+           Nightmare reached, Hell not yet). Two is the floor: a character with only Normal is
+           never asked at all, which is the branch above. */
+        if (popup >= 2) {
             describe_controls("difficulty");
-            press_button(PICK_NTH_FROM_TOP, (int)difficulty, STATE_POPUP, "the difficulty");
+            /* The difficulty IS the index — the list runs Normal, Nightmare, Hell from the top
+               and never leaves a gap, so the running difficulty is always present and always at
+               its own position. Clamped regardless: pressing the last entry beats pressing
+               nothing if a popup ever turns out to be shorter than the game being played. */
+            int nth = (int)difficulty < popup ? (int)difficulty : popup - 1;
+            press_button(PICK_NTH_FROM_TOP, nth, STATE_POPUP, "the difficulty");
             chose = 1;
             break;
         }
