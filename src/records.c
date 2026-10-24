@@ -336,8 +336,8 @@ static int player_name(const BYTE *player_data, char *out, size_t size)
 /* What /players is set to.
  *
  * found (this install, ProjectDiablo.dll, preferred base 0x10000000): the command's own two
- * sites. At 0x1023108E the value is raised — `mov ecx,[ecx+0x124]; inc ecx; mov [0x104E2500],ecx`
- * — and at 0x1023CD60 it is printed: `mov ecx,[0x104E2500]; cmp ecx,1; jle skip`, with the string
+ * sites. At 0x102C472E the value is raised — `mov ecx,[ecx+0x124]; inc ecx; mov [0x105DCC54],ecx`
+ * — and at 0x102D1C10 it is printed: `mov ecx,[0x105DCC54]; cmp ecx,1; jle skip`, with the string
  * "players set to " loaded straight after. Two independent sites, one global.
  *
  * It matters here for a reason that is easy to miss: PD2's damage hook clamps every blow to the
@@ -346,7 +346,7 @@ static int player_name(const BYTE *player_data, char *out, size_t size)
  * differently, which is why this is part of a record's identity and not a note beside it.
  *
  * Zero is what the global holds before the command is ever used, and that is /players 1. */
-#define OFF_PD2MOD_PLAYERCOUNT 0x4E2500
+#define OFF_PD2MOD_PLAYERCOUNT 0x5DCC54
 
 static DWORD player_count(void)
 {

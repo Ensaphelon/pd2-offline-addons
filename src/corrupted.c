@@ -20,7 +20,8 @@
  *     Worldstone Keep 2 is already 85 in Levels.txt, so "higher than the table" is blind exactly
  *     where it is needed.
  *
- * What does say is the game itself. Disassembling this install, ProjectDiablo.dll+0x26C310 picks
+ * What does say is the game itself. Disassembling this install, ProjectDiablo.dll+0x26C310
+ * (season 13; season 14 moved it, and the store below was re-found by signature) picks
  * the group (`nCorruptedZone`, a random 1..n kept at pGame+0x26F2, chosen once per game), then
  * walks that group's level list and marks each one:
  *
@@ -45,7 +46,7 @@
 #include "log.h"
 
 /* `mov dword ptr [eax+0x2dc], 0x55` */
-#define RVA_CORRUPT_MARK 0x26C4DE
+#define RVA_CORRUPT_MARK 0x2FFFF3
 static const BYTE MARK_EXPECTED[] = { 0xC7, 0x80, 0xDC, 0x02, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00 };
 #define MARK_LEN (sizeof MARK_EXPECTED)
 

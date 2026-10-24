@@ -10,8 +10,12 @@
  *
  * WHERE THOSE OFFSETS COME FROM
  * -----------------------------
- * Disassembled from the shipped ProjectDiablo.dll (image base 0x10000000), 2026-09-23. The draw
- * site is one function, and it is short enough to quote:
+ * Disassembled from the shipped ProjectDiablo.dll (image base 0x10000000), 2026-09-23, against
+ * SEASON 13: the bare addresses in this block were not re-measured for season 14, which moved
+ * the whole of .text. What the block explains is the shape of PD2's own meter, and that still
+ * holds; the offsets actually patched live in hook.c and are season 14's.
+ *
+ * The draw site is one function, and it is short enough to quote:
  *
  *     102589a0  call 0x1028f460                 ; the client's player unit -> edi
  *     102589cb  mov  eax,[edi+0x14]             ; UnitAny+0x14 = pPlayerData

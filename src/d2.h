@@ -62,12 +62,17 @@
  * patching D2Client's install sites changed nothing at all, and why a watcher that swapped the
  * globals after the fact was the only thing that ever worked.
  *
+ * Season 14 (ProjectDiablo.dll, 5252096 bytes, measured 2026-10-24). Season 13's values are in
+ * git history at 656ddfd; none of them carried over. The data moved as a block — both static
+ * addresses by exactly 0xD2CD8, keeping their 0x4020 spacing — while the code moved by its own
+ * unrelated amount, so every site below was located by its own signature and not by arithmetic.
+ *
  * found (this install, ProjectDiablo.dll, preferred base 0x10000000): the globals' addresses are
- * held in the mod's own variables 0x104DE3F8 (header) and 0x104DE338 (entries), and both install
+ * held in the mod's own variables 0x105D899C (header) and 0x105D88DC (entries), and both install
  * sites write through them with `mov dword ptr [reg], imm32`:
  *
- *   0x22FD43  mov [eax], 0x103A6FE0   |  0x230368  mov [edx], 0x103A6FE0   (a jump-table arm:
- *   0x22FD4E  mov [eax], 0x103A2FC0   |  0x23036E  mov [eax], 0x103A2FC0    0x103A6FC8 is the
+ *   0x2C33E3  mov [eax], 0x10479CB8   |  0x2C3A08  mov [edx], 0x10479CB8   (a jump-table arm:
+ *   0x2C33EE  mov [eax], 0x10475C98   |  0x2C3A0E  mov [eax], 0x10475C98    0x10479CA0 is the
  *                                     |                                     Options submenu)
  *   ^ menu init                       |  ^ switching back to the root menu
  *
@@ -77,16 +82,16 @@
  * at it before anything is written; a PD2 update that moves them makes the plugin fall back to
  * the watcher rather than corrupt somebody else's code. */
 
-#define OFF_PD2MOD_STATIC_MENU      0x3A6FE0
-#define OFF_PD2MOD_STATIC_ENTRIES   0x3A2FC0
-#define PD2MOD_STATIC_MENU_VA       0x103A6FE0   /* as stored in the immediates, at preferred base */
-#define PD2MOD_STATIC_ENTRIES_VA    0x103A2FC0
+#define OFF_PD2MOD_STATIC_MENU      0x479CB8
+#define OFF_PD2MOD_STATIC_ENTRIES   0x475C98
+#define PD2MOD_STATIC_MENU_VA       0x10479CB8   /* as stored in the immediates, at preferred base */
+#define PD2MOD_STATIC_ENTRIES_VA    0x10475C98
 
 /* Each is the imm32 of a 6-byte `C7 /0 imm32`, i.e. the instruction's address + 2. */
-#define OFF_PD2MOD_PATCH_MENU_A     0x22FD45
-#define OFF_PD2MOD_PATCH_ENTRIES_A  0x22FD50
-#define OFF_PD2MOD_PATCH_MENU_B     0x23036A
-#define OFF_PD2MOD_PATCH_ENTRIES_B  0x230370
+#define OFF_PD2MOD_PATCH_MENU_A     0x2C33E5
+#define OFF_PD2MOD_PATCH_ENTRIES_A  0x2C33F0
+#define OFF_PD2MOD_PATCH_MENU_B     0x2C3A0A
+#define OFF_PD2MOD_PATCH_ENTRIES_B  0x2C3A10
 
 /* Installing the menu is not all of it. A separate pass registers a menu and loads a label
    graphic for each of its entries, storing the result in the entry itself (+0x53C, see the struct
@@ -98,15 +103,15 @@
 
    found: two symmetrical sites, each an imm32 of a 5-byte `68 imm32` push (address + 1):
 
-     0x22FC42  push entries / 0x22FC47 push header / call 0x1029E760   — register and load
-     0x22FE26  push header  / 0x22FE2B push entries / call 0x102F01D0  — release (args reversed)
+     0x2C32E2  push entries / 0x2C32E7 push header / call 0x10335350   — register and load
+     0x2C34C6  push header  / 0x2C34CB push entries / call 0x103A4ED0  — release (args reversed)
 
    Both are followed at the same call sites by the identical pair for the Options submenu, which
    is left alone. */
-#define OFF_PD2MOD_REGISTER_ENTRIES 0x22FC43
-#define OFF_PD2MOD_REGISTER_MENU    0x22FC48
-#define OFF_PD2MOD_RELEASE_MENU     0x22FE27
-#define OFF_PD2MOD_RELEASE_ENTRIES  0x22FE2C
+#define OFF_PD2MOD_REGISTER_ENTRIES 0x2C32E3
+#define OFF_PD2MOD_REGISTER_MENU    0x2C32E8
+#define OFF_PD2MOD_RELEASE_MENU     0x2C34C7
+#define OFF_PD2MOD_RELEASE_ENTRIES  0x2C34CC
 
 /* --- D2Win.dll ------------------------------------------------------------------------------- */
 

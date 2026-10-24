@@ -10,19 +10,19 @@
  *     while `n` (+0x1A4) DID move from 0 to 1 on its own.
  *
  * That last detail is the useful one. Something in PD2 writes to this struct (the handshake at
- * ProjectDiablo.dll+0x23CC30, copying the launcher's `dps` setting into the gate), so the struct
- * is live and reachable — yet the damage fields stay dead through combat. Which points at the
- * damage hook running against the SERVER's copy of the player: D2 keeps separate unit lists even
- * in single player, and offline the game server runs inside this same process.
+ * ProjectDiablo.dll+0x23CC30 in season 13, copying the launcher's `dps` setting into the gate),
+ * so the struct is live and reachable — yet the damage fields stay dead through combat. Which
+ * points at the damage hook running against the SERVER's copy of the player: D2 keeps separate
+ * unit lists even in single player, and offline the game server runs inside this same process.
  *
  * Hooking the instruction sidesteps the question entirely. Whatever struct the damage is being
  * added to, the amount is in EBX at that moment, and EBX is ours to read.
  *
  * WHAT THE INSTRUCTION IS
  * -----------------------
- * ProjectDiablo.dll+0x26F5B6, six bytes: 01 98 a8 01 00 00 = `add [eax+0x1a8], ebx`.
+ * ProjectDiablo.dll+0x3031BA, six bytes: 01 98 a8 01 00 00 = `add [eax+0x1a8], ebx`.
  *
- * It is the last step of PD2's own damage accounting (the function starts at +0x26F4FA): the raw
+ * It is the last step of PD2's own damage accounting (the function starts at +0x3030FE): the raw
  * damage arrives in 256ths, is shifted down to whole points, and is then CLAMPED to the target's
  * remaining life before landing here. So EBX is not an estimate — it is damage actually removed,
  * with overkill already taken off. That clamp is the single hardest thing to get right when
@@ -43,19 +43,23 @@
 #include "log.h"
 
 /* Where the damage lands, as an offset from ProjectDiablo.dll's own base. The DLL's preferred
- * base is 0x10000000 and the instruction sits at 0x1026F5B6; resolved at runtime rather than
+ * base is 0x10000000 and the instruction sits at 0x103031BA; resolved at runtime rather than
  * assumed, because a relocated module would otherwise be a wild write. */
-#define RVA_DAMAGE_ADD 0x26F5B6
+#define RVA_DAMAGE_ADD 0x3031BA
 
 static const BYTE EXPECTED[] = { 0x01, 0x98, 0xA8, 0x01, 0x00, 0x00 };
 #define PATCH_LEN (sizeof EXPECTED)
 
 /* The gate that kept the damage path from ever reaching that instruction offline.
  *
- * ProjectDiablo.dll+0x26F527, seven bytes: 83 b9 a4 01 00 00 00 = `cmp [ecx+0x1a4], 0`, with a
- * `jbe` on the next line that skips the whole accounting when it is zero. At this point ECX is
+ * ProjectDiablo.dll+0x303127, seven bytes: 83 ba a4 01 00 00 00 = `cmp [edx+0x1a4], 0`, with a
+ * `jbe` on the next line that skips the whole accounting when it is zero. At this point EDX is
  * the SERVER's pPlayerData — the function loaded it two instructions earlier out of the attacking
  * unit.
+ *
+ * Season 14 both moved this and changed the register it reads: season 13 had the same instruction
+ * on ECX, at +0x26F527. That is why a byte search for the old form finds nothing anywhere rather
+ * than finding it somewhere new, and it is why the trampoline below pushes EDX.
  *
  * Online, the client asks for the meter by sending packet 0x5C and the realm sets that flag on
  * its own copy. Offline the packet goes nowhere, the flag stays zero, and the function turns
@@ -66,9 +70,9 @@ static const BYTE EXPECTED[] = { 0x01, 0x98, 0xA8, 0x01, 0x00, 0x00 };
  * have set. Everything past the gate is PD2's own code doing PD2's own arithmetic. The same hook
  * hands us the server-side pPlayerData pointer, which is the other thing we need — the widget
  * reads the CLIENT's copy, and somebody has to carry the number across. */
-#define RVA_DPS_GATE 0x26F527
+#define RVA_DPS_GATE 0x303127
 
-static const BYTE GATE_EXPECTED[] = { 0x83, 0xB9, 0xA4, 0x01, 0x00, 0x00, 0x00 };
+static const BYTE GATE_EXPECTED[] = { 0x83, 0xBA, 0xA4, 0x01, 0x00, 0x00, 0x00 };
 #define GATE_LEN (sizeof GATE_EXPECTED)
 
 /* --- WHAT TOOK THE BLOW -----------------------------------------------------------------------
@@ -363,7 +367,7 @@ int hook_install_gate(void)
     int n = 0;
     tramp[n++] = 0x60;                                        /* pushad                  */
     tramp[n++] = 0x9C;                                        /* pushfd                  */
-    tramp[n++] = 0x51;                                        /* push ecx (pPlayerData)  */
+    tramp[n++] = 0x52;                                        /* push edx (pPlayerData)  */
     tramp[n++] = 0xE8;                                        /* call on_dps_gate        */
     write_u32(tramp + n, (DWORD)on_dps_gate - (DWORD)(tramp + n + 4)); n += 4;
     tramp[n++] = 0x83; tramp[n++] = 0xC4; tramp[n++] = 0x04;  /* add esp,4               */
