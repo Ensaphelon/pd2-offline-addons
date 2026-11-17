@@ -41,6 +41,11 @@ void affixes_init(void *module);
 BOOL affixes_hook_install(void);
 void affixes_reload(void);
 
+/* Restock: PD2's gamble-window refresh, on an ordinary vendor's trade window too. Waits for
+ * ProjectDiablo.dll to fill its own packet slot and pointers, then keeps its word in step with the
+ * store panel every tick. */
+void vendor_tick(void);
+
 /* The development probes that mapped the game's memory and its sound table. They are driven by
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
  * plugin that answers a skill key by playing a sound and dumping memory is not something to ship
@@ -113,6 +118,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
         }
 
         dps_tick();
+        vendor_tick();
 
 #if ADDONS_DEV
         static BOOL was_down[12];

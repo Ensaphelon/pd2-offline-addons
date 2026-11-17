@@ -12,6 +12,7 @@ expensive to rediscover:
 | Quick Restart | `pd2-quick-restart` | A `RESTART` line in the ESC menu that drops and remakes the game |
 | Holy Grail beam | `pd2-holy-grail-tracker` | A shaft of light over a drop that would be new to the collection |
 | Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server, and writes each area's best down for `pd2-holy-inventory` |
+| Vendor restock | — | PD2's gamble-window refresh button and hotkey on an ordinary vendor's trade window too, restocking it the way the game's own four-minute timer does — [docs](docs/vendor-restock.md) |
 
 Two add-ons are not in the DLL at all, because they do not need to be — one edits a game table
 inside its archive, the other generates rules into the loot filter:
