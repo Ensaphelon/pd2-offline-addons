@@ -92,6 +92,23 @@ static int table_rows;
 static affix_entry crafts[MAX_CRAFT];
 static int craft_count;
 
+/* A corruption, by the type the item carries and the class of item it was done to. Unlike a
+   craft there is nothing to work out: stat 360's value IS the type, and CubeMain has a recipe
+   per type and class carrying the mod and its range. The classes are numbered narrowest first,
+   so the lowest-numbered match is the right one -- a bow is both `weap` and `bow`, and only the
+   `bow` recipe knows its socket corruption gives three to six rather than one to six. */
+#define MAX_CORRUPTION 1024
+static struct {
+    unsigned char type, cls, pct;
+    unsigned short stat;
+    short lo, hi;
+} corruption[MAX_CORRUPTION];
+static int corruption_count;
+
+#define MAX_ITEMCLASS 2048
+static struct { unsigned short item; unsigned char cls; } item_class[MAX_ITEMCLASS];
+static int item_class_count;
+
 /* Which base items each recipe applies to. Seven recipes reach any given item -- one per
    family -- and without this narrowing the field is every recipe in the game, which is how a
    helm's mods end up proposed for a breastplate. */
@@ -101,6 +118,7 @@ static int craft_code_count;
 
 /* --- the game's own structures, only as far as this reads them -------------------------------- */
 
+#define UNITANY_TXTFILENO  0x04     /* which row of the game's one item table this is */
 #define UNITANY_ITEMDATA   0x14     /* the union; for an item it is ItemData* */
 #define UNITANY_STATS      0x5C     /* StatList* */
 #define ITEMDATA_QUALITY   0x00     /* 8 is crafted */
@@ -115,6 +133,7 @@ static int craft_code_count;
 #define STATLIST_PMOD      0x48
 #define STATLIST_MODCOUNT  0x4C
 #define QUALITY_CRAFTED    8
+#define STAT_CORRUPTED     360      /* its VALUE is the corruption's type, not a flag */
 
 /* --- BH.dll ----------------------------------------------------------------------------------- */
 
@@ -143,6 +162,12 @@ static const wchar_t COLOUR_ORANGE[] = { 0xFF, L'c', L'8', 0 };
 static const wchar_t COLOUR_RESTORE[] = { 0xFF, L'c', L'3', 0 };
 #define ESCAPE 3
 
+/* The same escape written into the narrow buffer the suffix is built in. 0xFF is not printable
+   ASCII, so it survives the widening step untouched and arrives as the escape it is -- which is
+   what lets one part of the line be coloured differently from the rest. Red for the corruption,
+   because it is the one source on the line that was not there when the item was made. */
+static const char RED[] = { (char)0xFF, 'c', '1', 0 };
+
 /* --- loading ---------------------------------------------------------------------------------- */
 
 static int parse_line(const char *line)
@@ -152,10 +177,35 @@ static int parse_line(const char *line)
     if (sscanf(line, " %c %d %d %d %d %d %n",
                &kind, &affix, &stat, &lo, &hi, &pct, &consumed) != 6)
         return 0;
-    if ((kind != 'p' && kind != 's' && kind != 'c' && kind != 't') ||
-        affix < 0 || affix >= MAX_AFFIX) return 0;
+    if (!strchr("psctxk", kind) || affix < 0 || affix >= MAX_AFFIX) return 0;
     if ((kind == 'p' || kind == 's') && affix < 1) return 0;
     if (stat < 0 || stat > 0xFFFF) return 0;
+
+    if (kind == 'x') {
+        if (corruption_count >= MAX_CORRUPTION) return 0;
+        if (affix < 0 || affix > 255 || stat < 0 || stat > 255) return 0;
+        /* `x type class stat low high per-cent` -- six numbers and no name. */
+        int c_stat = 0, c_lo = 0, c_hi = 0, c_pct = 0;
+        if (sscanf(line, " %*c %*d %*d %d %d %d %d",
+                   &c_stat, &c_lo, &c_hi, &c_pct) != 4) return 0;
+        corruption[corruption_count].type = (unsigned char)affix;
+        corruption[corruption_count].cls = (unsigned char)stat;
+        corruption[corruption_count].stat = (unsigned short)c_stat;
+        corruption[corruption_count].lo = (short)c_lo;
+        corruption[corruption_count].hi = (short)c_hi;
+        corruption[corruption_count].pct = c_pct ? 1 : 0;
+        corruption_count++;
+        return 1;
+    }
+
+    if (kind == 'k') {
+        if (item_class_count >= MAX_ITEMCLASS) return 0;
+        if (affix < 0 || affix > 0xFFFF || stat < 0 || stat > 255) return 0;
+        item_class[item_class_count].item = (unsigned short)affix;
+        item_class[item_class_count].cls = (unsigned char)stat;
+        item_class_count++;
+        return 1;
+    }
 
     if (kind == 't') {
         if (craft_code_count >= MAX_CODES || affix >= MAX_CRAFT) return 0;
@@ -294,7 +344,60 @@ static int item_has_stat(void *item, int stat_id)
            list_has_stat(stats, STATLIST_PSTAT, STATLIST_COUNT, stat_id);
 }
 
-#define UNITANY_TXTFILENO  0x04     /* which row of the game's one item table this is */
+/* The VALUE of a stat, which for `corrupted` is the corruption's type. */
+static int item_stat_value(void *item, int stat_id, int *value)
+{
+    BYTE *stats = NULL;
+    if (!safe_read((BYTE *)item + UNITANY_STATS, &stats, sizeof stats) || !stats) return 0;
+    BYTE *entries = NULL;
+    WORD count = 0;
+    if (!safe_read(stats + STATLIST_PMOD, &entries, sizeof entries)) return 0;
+    if (!safe_read(stats + STATLIST_MODCOUNT, &count, sizeof count)) return 0;
+    if (!entries || count > 512) return 0;
+    for (WORD i = 0; i < count; i++) {
+        WORD index = 0;
+        DWORD got = 0;
+        if (!safe_read(entries + i * 8 + 2, &index, sizeof index)) return 0;
+        if (index != stat_id) continue;
+        if (!safe_read(entries + i * 8 + 4, &got, sizeof got)) return 0;
+        *value = (int)got;
+        return 1;
+    }
+    return 0;
+}
+
+/* What the corruption on this item did to this stat, if it touched it at all.
+ *
+ * Nothing is worked out here: the item says which corruption it carries, and the table says what
+ * that corruption does to an item of this class. Where the item belongs to several classes the
+ * lowest-numbered wins, the table being ordered narrowest first. */
+static int corruption_for(void *item, int stat_id, char *out, size_t cap)
+{
+    int type = 0;
+    if (!item || !item_stat_value(item, STAT_CORRUPTED, &type) || type <= 0) return 0;
+
+    DWORD item_no = 0;
+    if (!safe_read((BYTE *)item + UNITANY_TXTFILENO, &item_no, sizeof item_no)) return 0;
+
+    int best = -1, lo = 0, hi = 0, pct = 0;
+    for (int i = 0; i < corruption_count; i++) {
+        if (corruption[i].type != type || corruption[i].stat != stat_id) continue;
+        if (best >= 0 && corruption[i].cls >= best) continue;
+        for (int k = 0; k < item_class_count; k++) {
+            if (item_class[k].item != item_no || item_class[k].cls != corruption[i].cls)
+                continue;
+            best = corruption[i].cls;
+            lo = corruption[i].lo;
+            hi = corruption[i].hi;
+            pct = corruption[i].pct;
+            break;
+        }
+    }
+    if (best < 0) return 0;
+    const char *sign = pct ? "%" : "";
+    if (lo == hi) return _snprintf(out, cap, "Corrupted [%d]%s", lo, sign);
+    return _snprintf(out, cap, "Corrupted [%d - %d]%s", lo, hi, sign);
+}
 
 /* Which craft recipe made this item, by fingerprint: the one whose every fixed mod is a stat the
    item carries. Nothing on the item records the recipe -- the cube applies its mods and they
@@ -402,6 +505,14 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
                                     used ? ", " : "  ", one);
             if (written > 0) used += written;
         }
+    }
+    /* And the corruption, which the item names outright. */
+    char corrupted[64];
+    int n = corruption_for(item, stat_id, corrupted, sizeof corrupted);
+    if (n > 0) {
+        int written = _snprintf(suffix + used, sizeof suffix - used, "%s%s%s",
+                                used ? ", " : "  ", RED, corrupted);
+        if (written > 0) used += written;
     }
     if (!used) return;
 

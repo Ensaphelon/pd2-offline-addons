@@ -55,6 +55,25 @@ STATS = [
 CUBE_COLUMNS = ["description", "input 1", "output",
                 "mod 1", "mod 1 min", "mod 1 max", "mod 2", "mod 2 min", "mod 2 max",
                 "mod 3", "mod 3 min", "mod 3 max"]
+# Corruption recipes: a type number, the throwaway roll, and the mod with its range. The same
+# type is spelled once per item class, and a bow's socket corruption differs from a weapon's.
+CORRUPTIONS = [
+    {"description": "corrupt body poison", "input 1": '"tors,nos"',
+     "mod 1": "corrupt", "mod 1 min": "39", "mod 1 max": "39",
+     "mod 2": "corruptnum", "mod 2 min": "1", "mod 2 max": "1000",
+     "mod 3": "res-all", "mod 3 min": "30", "mod 3 max": "35"},
+    {"description": "corrupt helm poison", "input 1": '"helm,nos"',
+     "mod 1": "corrupt", "mod 1 min": "39", "mod 1 max": "39",
+     "mod 2": "res-all", "mod 2 min": "10", "mod 2 max": "15"},
+    # two spellings of one type and class, as sockets are: the span they cover between them
+    {"description": "corrupt body armour low", "input 1": '"tors,nos"',
+     "mod 1": "corrupt", "mod 1 min": "33", "mod 1 max": "33",
+     "mod 2": "ac%", "mod 2 min": "50", "mod 2 max": "60"},
+    {"description": "corrupt body armour high", "input 1": '"tors,nos"',
+     "mod 1": "corrupt", "mod 1 min": "33", "mod 1 max": "33",
+     "mod 2": "ac%", "mod 2 min": "70", "mod 2 max": "80"},
+]
+
 RECIPES = [
     {"description": "magic field plate + brilliant craft ingredient -> brilliant body",
      "input 1": '"tors,mag,noe"', "mod 1": "res-all", "mod 1 min": "5", "mod 1 max": "10",
@@ -99,7 +118,8 @@ def archive(tmp_path: Path) -> Path:
                   _tsv(["code", "stat1", "stat2", "stat3", "stat4"], PROPERTIES))
     mpq_asset.add(path, affix_labels.EXCEL + "ItemStatCost.txt",
                   _tsv(["ID", "Stat", "descfunc"], STATS))
-    mpq_asset.add(path, affix_labels.EXCEL + "CubeMain.txt", _tsv(CUBE_COLUMNS, RECIPES))
+    mpq_asset.add(path, affix_labels.EXCEL + "CubeMain.txt",
+                  _tsv(CUBE_COLUMNS, RECIPES + CORRUPTIONS))
     mpq_asset.add(path, affix_labels.EXCEL + "ItemTypes.txt",
                   _tsv(["Code", "Equiv1", "Equiv2"], ITEM_TYPES))
     mpq_asset.add(path, affix_labels.EXCEL + "Armor.txt", _tsv(["code", "type", "type2", "name"], ARMOR))
@@ -156,12 +176,18 @@ def test_the_rendered_table_reads_back_the_way_the_plugin_reads_it(archive) -> N
     for line in affix_ranges.render(archive).splitlines():
         if line.startswith("#"):
             continue
-        kind, affix, stat, lo, hi, pct, name = line.split(" ", 6)
+        fields = line.split(" ", 6)
+        # x and k rows carry six numbers and no name; the rest carry five and a name
+        while len(fields) < 7:
+            fields.append("")
+        kind, affix, stat, lo, hi, pct, name = fields
         parsed.append((kind, int(affix), int(stat), int(lo), int(hi), int(pct), name))
     assert [row for row in parsed if row[0] in ("p", "s")] == affix_ranges.rows(archive)
     assert [row[1:] for row in parsed if row[0] == "c"] == affix_ranges.craft_rows(archive)
     assert [(row[1], row[2], row[6]) for row in parsed
             if row[0] == "t"] == affix_ranges.craft_codes(archive)
+    assert [row[1:6] for row in parsed if row[0] == "x"] == [
+        tuple(r[:5]) for r in affix_ranges.corruption_rows(archive)]
     assert ("s", 1, 252, 0, 0, 0, "of Self-Repair") in parsed
 
 
@@ -171,7 +197,9 @@ def test_the_table_lands_beside_the_plugin(archive, tmp_path) -> None:
     assert table.is_file()
     assert written == (len(affix_ranges.rows(archive))
                        + len(affix_ranges.craft_rows(archive))
-                       + len(affix_ranges.craft_codes(archive)))
+                       + len(affix_ranges.craft_codes(archive))
+                       + len(affix_ranges.corruption_rows(archive))
+                       + len(affix_ranges.corruption_items(archive)))
     # Path.read_text takes no `newline` before 3.13, and folding CRLF away here would hide
     # exactly what is being checked: the plugin reads this with fgets.
     with open(table, encoding="latin1", newline="") as handle:
@@ -215,7 +243,7 @@ def test_ethereal_is_not_a_stat_and_does_not_become_a_row(archive) -> None:
 def test_the_table_carries_crafts_alongside_affixes(archive) -> None:
     kinds = {line.split(" ", 1)[0] for line in affix_ranges.render(archive).splitlines()
              if not line.startswith("#")}
-    assert kinds == {"p", "s", "c", "t"}
+    assert kinds == {"p", "s", "c", "t", "x", "k"}
 
 
 def test_a_recipe_reaches_the_items_its_type_covers_and_no_others(archive) -> None:
@@ -245,3 +273,38 @@ def test_the_item_number_skips_the_rows_the_game_does_not_number(archive) -> Non
     numbers = affix_ranges.item_numbers(archive)
     assert numbers["ltp"] == 0 and numbers["clk"] == 1
     assert "" not in numbers
+
+
+def test_a_corruption_is_read_off_the_item_rather_than_guessed(archive) -> None:
+    """Type 39 on a body armour is poison resistance 30-35; on a helm the same type is 10-15,
+    which is why the item's class is part of the key."""
+    classes, _table = affix_ranges._corruptions(archive)
+    rows = {(kind, classes[cls], stat): (lo, hi)
+            for kind, cls, stat, lo, hi, _pct in affix_ranges.corruption_rows(archive)}
+    assert rows[(39, "tors", 45)] == (30, 35)
+    assert rows[(39, "helm", 45)] == (10, 15)
+
+
+def test_two_spellings_of_one_corruption_fold_to_the_span_they_cover(archive) -> None:
+    """Socket corruptions are written one recipe per count; a single honest answer is the span."""
+    classes, _table = affix_ranges._corruptions(archive)
+    rows = {(kind, classes[cls], stat): (lo, hi)
+            for kind, cls, stat, lo, hi, _pct in affix_ranges.corruption_rows(archive)}
+    assert rows[(33, "tors", 16)] == (50, 80)
+
+
+def test_the_narrowest_class_is_numbered_first(archive) -> None:
+    """An item belongs to several, and the narrowest is the one that knows what it is talking
+    about -- the plugin takes the lowest-numbered match."""
+    classes, _table = affix_ranges._corruptions(archive)
+    sizes = [len(affix_ranges._codes_of(archive, affix_ranges._type_family(archive, token)))
+             for token in classes]
+    assert sizes == sorted(sizes)
+
+
+def test_an_item_carries_every_corruption_class_it_belongs_to(archive) -> None:
+    classes, _table = affix_ranges._corruptions(archive)
+    numbers = affix_ranges.item_numbers(archive)
+    mine = sorted(cls for number, cls in affix_ranges.corruption_items(archive)
+                  if number == numbers["ltp"])
+    assert [classes[c] for c in mine] == ["tors"]

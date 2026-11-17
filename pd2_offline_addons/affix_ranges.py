@@ -255,6 +255,96 @@ def craft_codes(archive: Path) -> list[tuple[int, int, str]]:
     return out
 
 
+def _corruptions(archive: Path) -> tuple[list[str], dict[tuple[int, int], list[tuple]]]:
+    """(the item classes corruption recipes name, (type, class) -> its mods).
+
+    A corrupted item says outright what was done to it: stat 360 `corrupted` holds the type
+    number, and CubeMain has a recipe per type and item class carrying the mod and its range.
+    Type 39 on a body armour is poison resistance 30-35, which is what makes a crafted Light
+    Plate's 64% add up: Chromatic's 21-30, the craft's 5-10 and the corruption's 30-35.
+
+    No fingerprinting here, unlike the crafts -- the number is on the item.
+    """
+    ids = _stat_ids(archive)
+    prop_stats = property_stats(archive)
+    classes: list[str] = []
+    out: dict[tuple[int, int], list[tuple]] = {}
+    for row in _table(archive, "CubeMain"):
+        kind = None
+        mods: list[tuple[int, int, int, int]] = []
+        for slot in range(1, 6):
+            code = (row.get(f"mod {slot}") or "").strip()
+            if not code:
+                continue
+            low = (row.get(f"mod {slot} min") or "").strip()
+            high = (row.get(f"mod {slot} max") or "").strip()
+            lo = int(low) if low.lstrip("-").isdigit() else 0
+            hi = int(high) if high.lstrip("-").isdigit() else 0
+            if code == "corrupt":
+                kind = lo
+                continue
+            if code == "corruptnum":
+                continue
+            for stat in prop_stats.get(code, ()):
+                found = ids.get(stat)
+                if found:
+                    mods.append((found[0], lo, hi, int(found[1])))
+        if kind is None or not mods:
+            continue
+        token = (row.get("input 1") or "").strip('"').split(",")[0].strip()
+        if token not in classes:
+            classes.append(token)
+        key = (kind, classes.index(token))
+        # One type and class can be spelled by several recipes -- sockets are, once per count.
+        # Folding them to the span they cover between them is the only honest single answer.
+        merged = {stat: (lo, hi, pct) for stat, lo, hi, pct in out.get(key, [])}
+        for stat, lo, hi, pct in mods:
+            if stat in merged:
+                was_lo, was_hi, _ = merged[stat]
+                merged[stat] = (min(was_lo, lo), max(was_hi, hi), pct)
+            else:
+                merged[stat] = (lo, hi, pct)
+        out[key] = [(stat, lo, hi, pct) for stat, (lo, hi, pct) in sorted(merged.items())]
+
+    # Numbered narrowest first, because an item belongs to several of them and the narrowest is
+    # the one that is right: a bow is both `weap` and `bow`, and only the `bow` recipe knows a
+    # socket corruption gives it three to six rather than one to six. The plugin takes the
+    # lowest-numbered class that matches, so the ordering carries that rule across.
+    sizes = {token: len(_codes_of(archive, _type_family(archive, token))) or 1
+             for token in classes}
+    order = sorted(classes, key=lambda token: (sizes[token], token))
+    moved = {classes.index(token): index for index, token in enumerate(order)}
+    return order, {(kind, moved[cls]): mods for (kind, cls), mods in out.items()}
+
+
+def corruption_rows(archive: Path) -> list[tuple[int, int, int, int, int, int]]:
+    """(type, class, stat id, low, high, per cent) -- what a corruption of that type did."""
+    _classes, table = _corruptions(archive)
+    return [(kind, cls, stat, lo, hi, pct)
+            for (kind, cls), mods in sorted(table.items())
+            for stat, lo, hi, pct in mods]
+
+
+def corruption_items(archive: Path) -> list[tuple[int, int]]:
+    """(item number, class) for every base item a corruption recipe's class covers.
+
+    Carried as classes rather than expanded per type: 334 type-and-class pairs against 836 items
+    would be a table of tens of thousands of rows for the same handful of facts.
+
+    Four of the tokens name an item outright rather than a type -- rings, the two larger charms,
+    and Annihilus by its unique name -- so a token that expands to nothing is tried as a code.
+    """
+    classes, _table_ = _corruptions(archive)
+    numbers = item_numbers(archive)
+    out: list[tuple[int, int]] = []
+    for index, token in enumerate(classes):
+        codes = _codes_of(archive, _type_family(archive, token))
+        if not codes and token in numbers:
+            codes = {token}
+        out += [(numbers[code], index) for code in sorted(codes) if code in numbers]
+    return out
+
+
 def render(archive: Path) -> str:
     """The table as the plugin reads it: `kind id stat low high percent name`, name last.
 
@@ -269,6 +359,8 @@ def render(archive: Path) -> str:
         "#   p/s: id is the one the game keeps on the item, prefixes shifted past the suffixes",
         "#   c:   id groups the fixed mods of one craft recipe",
         "#   t:   which base items a recipe applies to; stat_id column holds the item number",
+        "#   x:   a corruption, by the type the item carries in stat 360 and the item class",
+        "#   k:   which corruption classes a base item belongs to",
     ]
     lines += [f"{kind} {affix} {stat} {lo} {hi} {pct} {name}"
               for kind, affix, stat, lo, hi, pct, name in rows(archive)]
@@ -276,6 +368,10 @@ def render(archive: Path) -> str:
               for recipe, stat, lo, hi, pct, family in craft_rows(archive)]
     lines += [f"t {recipe} {number} 0 0 0 {code}"
               for recipe, number, code in craft_codes(archive)]
+    lines += [f"x {kind} {cls} {stat} {lo} {hi} {pct}"
+              for kind, cls, stat, lo, hi, pct in corruption_rows(archive)]
+    # Padded to the same six columns as every other row so one parser reads them all.
+    lines += [f"k {number} {cls} 0 0 0" for number, cls in corruption_items(archive)]
     return "\n".join(lines) + "\n"
 
 

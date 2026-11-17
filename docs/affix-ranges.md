@@ -7,6 +7,7 @@ of that line, beside the range the maphack already prints there.
 +87% Enhanced Defense [10 - 200]  Blessed [51 - 65]%, Brilliant craft [25 - 50]%
 18% Increased Chance of Blocking  Brilliant craft [10 - 20]%
 Lightning Resist +48% [6 - 70]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant craft [5 - 10]%
+Poison Resist +64%* [3 - 30]  Chromatic [21 - 30]%, Brilliant craft [5 - 10]%, Corrupted [30 - 35]%
 Repairs 1 durability in 33 seconds  of Self-Repair
 ```
 
@@ -86,6 +87,39 @@ Not all mods can be looked for: `item_armor_percent` is drawn on the tooltip but
 item's stat list at all, which is why this is a score and not a complete match. The stats live in
 the **second** list — `StatList+0x48`, the one BH itself walks. `+0x24` holds the base item's
 three: defence and the two durabilities.
+
+## Naming the corruption
+
+A corrupted item says outright what was done to it, which makes this the one source on a line
+that needs no working out at all: **stat 360 holds the corruption's TYPE, not a flag**, and
+`CubeMain` has a recipe per type and item class carrying the mod and its range. Type 39 on a body
+armour is poison resistance 30-35; the same type on a helm is 10-15, which is why the item's
+class is half the key.
+
+That is what closes the last gap. A crafted Light Plate showing 64% poison resistance is
+Chromatic's 21-30, the craft's 5-10 and the corruption's 30-35 -- and until the corruption was
+named, the line visibly did not add up.
+
+Two things about the recipes:
+
+* **An item belongs to several classes, and the narrowest is the one that knows.** A bow is both
+  `weap` and `bow`, and only the `bow` recipe knows a socket corruption gives it three to six
+  rather than one to six. The classes are numbered narrowest first and the plugin takes the
+  lowest-numbered match, which carries that rule across without any logic in the plugin.
+* **One type and class can be spelled by several recipes** -- sockets are, one per count. The
+  span they cover between them is the only honest single answer.
+
+The label is drawn red rather than orange: the corruption is the one source on the line that was
+not there when the item was made. The escape goes into the narrow buffer the line is assembled
+in -- 0xFF is not printable ASCII, so it survives the widening untouched.
+
+### How it was nearly missed
+
+The first search for this concluded the ranges were not in the game at all, on the strength of
+every reference to stat 360 in every module being a read. That reasoning was wrong: a property is
+applied through `Properties.txt` generically, taking the stat number from the table rather than
+from an instruction, so a write would never appear as a literal 360 in the code. The ranges were
+in `CubeMain` the whole time, in 995 rows that each set `corrupt N-N` alongside the mod.
 
 ## What it deliberately does not do
 
