@@ -61,6 +61,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "d2.h"
 #include "log.h"
 #include "addons.h"
@@ -168,6 +169,51 @@ static const wchar_t COLOUR_RESTORE[] = { 0xFF, L'c', L'3', 0 };
    because it is the one source on the line that was not there when the item was made. */
 static const char RED[] = { (char)0xFF, 'c', '1', 0 };
 
+/* --- when to show it -------------------------------------------------------------------------- */
+
+/* Held-key gating, read from affix-ranges.cfg beside the DLL and re-read while the game runs, so
+ * the mode can be changed by editing a line rather than by restarting.
+ *
+ * Worth having because the lines are wide: four sources named on one stat line is most of the
+ * screen, which is what you want while reading an item and not while playing. The detour runs
+ * once per tooltip line per FRAME -- measured, four calls in 25ms -- so the key is read fresh
+ * every time and the tooltip follows the key with no lag and nothing to invalidate. */
+static int hold_key;            /* 0 shows always; otherwise a virtual-key code */
+static char config_path[MAX_PATH];
+
+static void config_init(void *module)
+{
+    if (!GetModuleFileNameA((HMODULE)module, config_path, MAX_PATH)) return;
+    char *slash = strrchr(config_path, '\\');
+    if (slash) strcpy(slash + 1, "affix-ranges.cfg");
+}
+
+void affixes_reload(void)
+{
+    if (!config_path[0]) return;
+    FILE *f = fopen(config_path, "rb");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        char word[32];
+        if (sscanf(line, " hold : %31s", word) != 1 &&
+            sscanf(line, " hold %31s", word) != 1)
+            continue;
+        for (char *c = word; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (!strcmp(word, "shift")) hold_key = VK_SHIFT;
+        else if (!strcmp(word, "ctrl") || !strcmp(word, "control")) hold_key = VK_CONTROL;
+        else if (!strcmp(word, "alt")) hold_key = VK_MENU;
+        else hold_key = 0;       /* "always", "none", anything else */
+        break;
+    }
+    fclose(f);
+}
+
+static int showing(void)
+{
+    return !hold_key || (GetAsyncKeyState(hold_key) & 0x8000) != 0;
+}
+
 /* --- loading ---------------------------------------------------------------------------------- */
 
 static int parse_line(const char *line)
@@ -244,6 +290,9 @@ static int parse_line(const char *line)
 
 void affixes_init(void *module)
 {
+    config_init(module);
+    affixes_reload();
+
     char path[MAX_PATH];
     if (!GetModuleFileNameA((HMODULE)module, path, MAX_PATH)) return;
     char *slash = strrchr(path, '\\');
@@ -261,7 +310,10 @@ void affixes_init(void *module)
         table_rows += parse_line(line);
     }
     fclose(f);
-    log_line("affix ranges: %d rows loaded", table_rows);
+    log_line("affix ranges: %d rows loaded, shown %s", table_rows,
+             hold_key == VK_SHIFT ? "while shift is held"
+             : hold_key == VK_CONTROL ? "while ctrl is held"
+             : hold_key == VK_MENU ? "while alt is held" : "always");
 }
 
 /* --- the detour -------------------------------------------------------------------------------- */
@@ -445,6 +497,7 @@ static const affix_entry *craft_for(void *item)
 static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int flag)
 {
     original(line, stat_id, item, flag);
+    if (!showing()) return;
 #if ADDONS_DEV
     BYTE *trace_data = item ? *(BYTE **)((BYTE *)item + UNITANY_ITEMDATA) : NULL;
     if (traced < 60 && trace_data) {

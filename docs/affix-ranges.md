@@ -13,6 +13,16 @@ Repairs 1 durability in 33 seconds  of Self-Repair
 
 Nothing to turn on: `install` puts the table beside the plugin, and the plugin reads it.
 
+**Shown only while shift is held, by default.** Four sources named on one stat line is most of
+the screen, which is what you want while reading an item and not while playing. `install` writes
+`affix-ranges.cfg` beside the DLL the first time and never again, since the point of it is to be
+edited; `hold: always`, `shift`, `ctrl` or `alt`. The plugin re-reads it once a second while the
+game runs, so a change takes effect on the next tooltip rather than the next session.
+
+That this works at all is a measured fact rather than a hope: the hooked function runs once per
+tooltip line per frame -- four calls in 25ms, from the trace -- so the key is read fresh every
+time and there is no cached text to invalidate.
+
 ## Why it is not a loot filter
 
 It began as one, and the filter version works — `affixes` still installs it, and it is the only

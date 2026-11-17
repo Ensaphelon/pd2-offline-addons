@@ -308,3 +308,24 @@ def test_an_item_carries_every_corruption_class_it_belongs_to(archive) -> None:
     mine = sorted(cls for number, cls in affix_ranges.corruption_items(archive)
                   if number == numbers["ltp"])
     assert [classes[c] for c in mine] == ["tors"]
+
+
+def test_the_settings_file_is_written_once_and_then_left_alone(archive, tmp_path) -> None:
+    """It is there to be edited; an install that reset it would undo the choice silently."""
+    affix_ranges.write_table(archive, tmp_path)
+    config = tmp_path / affix_ranges.CONFIG_NAME
+    assert "hold: shift" in config.read_text(encoding="latin1")
+
+    config.write_text("hold: always\n", encoding="latin1")
+    affix_ranges.write_table(archive, tmp_path)
+    assert config.read_text(encoding="latin1") == "hold: always\n"
+
+
+def test_the_settings_file_names_every_mode_the_plugin_understands(archive, tmp_path) -> None:
+    """A mode the plugin has and the file does not mention is a mode nobody will find."""
+    affix_ranges.write_table(archive, tmp_path)
+    text = (tmp_path / affix_ranges.CONFIG_NAME).read_text(encoding="latin1")
+    plugin = Path("src/affixes.c").read_text(encoding="utf-8")
+    for mode in ("always", "shift", "ctrl", "alt"):
+        assert f"hold: {mode}" in text
+        assert f'"{mode}"' in plugin

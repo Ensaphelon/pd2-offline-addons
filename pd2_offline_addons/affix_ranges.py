@@ -27,6 +27,18 @@ from pathlib import Path
 from .affix_labels import EXCEL, _clean, _table, property_stats
 
 TABLE_NAME = "affixes.txt"
+CONFIG_NAME = "affix-ranges.cfg"
+
+# Written once, on the first install, and never again -- the point of it is to be edited. The
+# plugin re-reads it while the game runs, so a change takes effect on the next tooltip.
+CONFIG_DEFAULT = """# When the affix ranges are shown on an item's stat lines.
+#   hold: always   every tooltip, all the time
+#   hold: shift    only while shift is held -- the lines are wide, and this keeps them out of
+#                  the way while playing without losing them when reading an item
+#   hold: ctrl     the same, on control
+#   hold: alt      the same, on alt
+hold: shift
+"""
 
 # Long enough for every affix the game ships ("of the Vampiremagi" is 18) with room to spare, and
 # short enough that the plugin can hold the table in a fixed array rather than a heap of its own.
@@ -376,7 +388,15 @@ def render(archive: Path) -> str:
 
 
 def write_table(archive: Path, install_dir: Path) -> int:
-    """Puts the table beside the plugin. Returns how many rows went in."""
+    """Puts the table beside the plugin. Returns how many rows went in.
+
+    The settings file goes beside it, but only if it is not already there: the table is
+    generated and belongs to this program, while the settings file belongs to whoever edits it,
+    and an install should not quietly undo their choice.
+    """
     text = render(archive)
     (install_dir / TABLE_NAME).write_text(text, encoding="latin1", newline="\n")
+    config = install_dir / CONFIG_NAME
+    if not config.exists():
+        config.write_text(CONFIG_DEFAULT, encoding="latin1", newline="\n")
     return sum(1 for line in text.splitlines() if not line.startswith("#"))

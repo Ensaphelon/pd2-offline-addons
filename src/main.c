@@ -39,6 +39,7 @@ void records_init(void *module);
  * waits for BH.dll — PD2 loads the maphack after us — before patching its one call site. */
 void affixes_init(void *module);
 BOOL affixes_hook_install(void);
+void affixes_reload(void);
 
 /* The development probes that mapped the game's memory and its sound table. They are driven by
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
@@ -106,6 +107,9 @@ static DWORD WINAPI bootstrap(LPVOID module)
         if (now - last_reload >= BEAM_RELOAD_MS) {
             last_reload = now;
             beam_reload();
+            /* Same tick: affix-ranges.cfg decides whether the ranges show always or only while
+             * a key is held, and that is worth being able to change without restarting. */
+            affixes_reload();
         }
 
         dps_tick();
