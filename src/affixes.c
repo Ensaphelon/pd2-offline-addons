@@ -110,6 +110,11 @@ static int corruption_count;
 static struct { unsigned short item; unsigned char cls; } item_class[MAX_ITEMCLASS];
 static int item_class_count;
 
+/* How far left each stat's stored value is shifted. Zero for all but a handful -- life, mana and
+   stamina -- and getting it wrong is silent: a +27 to Life reads 6912 and matches no range. */
+#define MAX_STAT 1024
+static unsigned char value_shift[MAX_STAT];
+
 /* Which base items each recipe applies to. Seven recipes reach any given item -- one per
    family -- and without this narrowing the field is every recipe in the game, which is how a
    helm's mods end up proposed for a breastplate. */
@@ -230,7 +235,7 @@ static int parse_line(const char *line)
     if (sscanf(line, " %c %d %d %d %d %d %n",
                &kind, &affix, &stat, &lo, &hi, &pct, &consumed) != 6)
         return 0;
-    if (!strchr("psctxk", kind) || affix < 0 || affix >= MAX_AFFIX) return 0;
+    if (!strchr("psctxkv", kind) || affix < 0 || affix >= MAX_AFFIX) return 0;
     if ((kind == 'p' || kind == 's') && affix < 1) return 0;
     if (stat < 0 || stat > 0xFFFF) return 0;
 
@@ -248,6 +253,14 @@ static int parse_line(const char *line)
         corruption[corruption_count].hi = (short)c_hi;
         corruption[corruption_count].pct = c_pct ? 1 : 0;
         corruption_count++;
+        return 1;
+    }
+
+    /* `v stat bits` -- the stat's stored value is shifted left by that many, and comparing it
+       against a range from the table without undoing that is comparing nothing. */
+    if (kind == 'v') {
+        if (affix >= MAX_STAT || stat < 0 || stat > 24) return 0;
+        value_shift[affix] = (unsigned char)stat;
         return 1;
     }
 
@@ -485,7 +498,7 @@ static void correct_range(wchar_t *line, int affixes, int add_lo, int add_hi)
 
     if (!add_lo && !add_hi) return;
     if (!read_range(line, &open_at, &close_at, &lo, &hi)) return;
-    if (!affixes) lo = hi = 0;
+    if (!affixes) lo = 0;
     lo += add_lo;
     hi += add_hi;
     if (shown_value(line, open_at, &shown) && (shown < lo || shown > hi)) return;
@@ -502,11 +515,7 @@ static int traced;
 
 /* --- the craft recipe ---------------------------------------------------------------------- */
 
-/* Is this stat on the item at all? The list hangs off UnitAny+0x5C; entries are eight bytes with
-   the stat index at +2. Read through ReadProcessMemory for the same reason the rest of this
-   repository does it -- IsBadReadPtr and VirtualQuery-then-read have each taken this game
-   down -- and a count that is not plausible is treated as no list rather than walked. */
-static int list_has_stat(BYTE *stats, int at_pointer, int at_count, int stat_id)
+static int list_stat_value(BYTE *stats, int at_pointer, int at_count, int stat_id, int *value)
 {
     BYTE *entries = NULL;
     WORD count = 0;
@@ -515,40 +524,26 @@ static int list_has_stat(BYTE *stats, int at_pointer, int at_count, int stat_id)
     if (!entries || count > 512) return 0;
     for (WORD i = 0; i < count; i++) {
         WORD index = 0;
-        if (!safe_read(entries + i * 8 + 2, &index, sizeof index)) return 0;
-        if (index == stat_id) return 1;
-    }
-    return 0;
-}
-
-static int item_has_stat(void *item, int stat_id)
-{
-    BYTE *stats = NULL;
-    if (!safe_read((BYTE *)item + UNITANY_STATS, &stats, sizeof stats) || !stats) return 0;
-    return list_has_stat(stats, STATLIST_PMOD, STATLIST_MODCOUNT, stat_id) ||
-           list_has_stat(stats, STATLIST_PSTAT, STATLIST_COUNT, stat_id);
-}
-
-/* The VALUE of a stat, which for `corrupted` is the corruption's type. */
-static int item_stat_value(void *item, int stat_id, int *value)
-{
-    BYTE *stats = NULL;
-    if (!safe_read((BYTE *)item + UNITANY_STATS, &stats, sizeof stats) || !stats) return 0;
-    BYTE *entries = NULL;
-    WORD count = 0;
-    if (!safe_read(stats + STATLIST_PMOD, &entries, sizeof entries)) return 0;
-    if (!safe_read(stats + STATLIST_MODCOUNT, &count, sizeof count)) return 0;
-    if (!entries || count > 512) return 0;
-    for (WORD i = 0; i < count; i++) {
-        WORD index = 0;
         DWORD got = 0;
         if (!safe_read(entries + i * 8 + 2, &index, sizeof index)) return 0;
         if (index != stat_id) continue;
         if (!safe_read(entries + i * 8 + 4, &got, sizeof got)) return 0;
-        *value = (int)got;
+        /* Back into the units the tables are written in. Arithmetic, so a negative mod -- a
+           requirement the item lowers -- comes back negative. */
+        *value = stat_id >= 0 && stat_id < MAX_STAT ? (int)got >> value_shift[stat_id] : (int)got;
         return 1;
     }
     return 0;
+}
+
+/* The VALUE of a stat, which for `corrupted` is the corruption's type. Both lists, mods first,
+   for the same reason the presence check used to: a base stat can be a recipe's mod too. */
+static int item_stat_value(void *item, int stat_id, int *value)
+{
+    BYTE *stats = NULL;
+    if (!safe_read((BYTE *)item + UNITANY_STATS, &stats, sizeof stats) || !stats) return 0;
+    return list_stat_value(stats, STATLIST_PMOD, STATLIST_MODCOUNT, stat_id, value) ||
+           list_stat_value(stats, STATLIST_PSTAT, STATLIST_COUNT, stat_id, value);
 }
 
 /* What the corruption on this item did to this stat, if it touched it at all.
@@ -585,10 +580,32 @@ static int corruption_for(void *item, int stat_id, int *out_lo, int *out_hi, int
     return 1;
 }
 
-/* Which craft recipe made this item, by fingerprint: the one whose every fixed mod is a stat the
-   item carries. Nothing on the item records the recipe -- the cube applies its mods and they
-   become ordinary stats -- so this is the only way to ask, and it is answered conservatively:
-   two recipes matching means no answer at all rather than a guess.
+/* What the item's own affixes and its corruption can account for on this stat, between them.
+   Everything outside that span had to come from somewhere else. */
+static void explained_span(void *item, int stat_id, int *out_lo, int *out_hi)
+{
+    int lo = 0, hi = 0, c_lo = 0, c_hi = 0, c_pct = 0;
+    for (int slot = 0; slot < 6; slot++) {
+        const affix_entry *e = affix_at(item, slot);
+        int a_lo = 0, a_hi = 0;
+        if (e && contribution(e, stat_id, &a_lo, &a_hi)) { lo += a_lo; hi += a_hi; }
+    }
+    if (corruption_for(item, stat_id, &c_lo, &c_hi, &c_pct)) { lo += c_lo; hi += c_hi; }
+    *out_lo = lo;
+    *out_hi = hi;
+}
+
+/* Which craft recipe made this item, by fingerprint: the one whose fixed mods account for what
+   the item's own affixes cannot. Nothing on the item records the recipe -- the cube applies its
+   mods and they become ordinary stats -- so this is the only way to ask, and it is answered
+   conservatively: two recipes matching means no answer at all rather than a guess.
+
+   A MOD BEING PRESENT IS NOT EVIDENCE, which cost a wrong answer on a real item: a Safety body
+   armour was named Brilliant because Brilliant gives all resistances and the item had four of
+   them -- from Chromatic, its own prefix, which explains every point of them. What counts is a
+   value the affixes cannot reach: 35 cold resistance under a Chromatic that tops out at 30, a
+   blocking chance nothing on the item grants, physical damage reduction out of nowhere. On the
+   same two items that scores Brilliant 3 against Safety 0 and Safety 2 against Brilliant 0.
 
    One item at a time is remembered, which is all a tooltip needs: the same item is asked about
    once per line it draws. */
@@ -613,8 +630,12 @@ static const affix_entry *craft_for(void *item)
             const affix_entry *e = &crafts[craft_code[c].recipe];
             if (!e->count) continue;
             int hits = 0;
-            for (int i = 0; i < e->count; i++)
-                hits += item_has_stat(item, e->stat[i]);
+            for (int i = 0; i < e->count; i++) {
+                int value = 0, lo = 0, hi = 0;
+                if (!item_stat_value(item, e->stat[i], &value)) continue;
+                explained_span(item, e->stat[i], &lo, &hi);
+                if (value > hi || value < lo) hits++;
+            }
             if (hits > best) { runner = best; best = hits; found = e; }
             else if (hits > runner) runner = hits;
         }

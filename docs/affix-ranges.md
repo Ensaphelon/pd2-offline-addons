@@ -92,10 +92,20 @@ could have been made from and what it carries:
 1. The item's number narrows `CubeMain`'s recipes to the ones whose input type covers it — seven,
    one per family. Without this the field is every recipe in the game, and a Brilliant *helm*'s
    faster hit recovery gets proposed for a breastplate.
-2. Each is scored by how many of its fixed mods the item has. On a real crafted Light Plate that
-   is Brilliant with five of six against one for the runner-up.
-3. A winner needs two mods and a clear margin. A tie is not an answer, and the plugin prints
-   nothing rather than choose.
+2. Each is scored — and **a mod being present is not evidence**, which cost a wrong answer on a
+   real item. A Safety body armour was named Brilliant because Brilliant grants all resistances
+   and the item had four of them. They came from Chromatic, its own prefix, which explains every
+   point of them. What counts is a value the item's own affixes and corruption cannot reach:
+   35 cold resistance under a Chromatic that tops out at 30, a blocking chance nothing on the
+   item grants, physical damage reduction out of nowhere. That scores the crafted Light Plate
+   Brilliant 3 against Safety 0, and the Safety plate the other way around.
+3. A winner needs two such mods and a clear margin. A tie is not an answer, and the plugin
+   prints nothing rather than choose.
+
+Comparing a value against a range means both being in the same units, and they are not: life,
+mana and stamina are stored shifted left by eight, so a `+27 to Life` reads 6912 — outside every
+range there is, which would make every recipe with a life mod look like a match. The shifts come
+over in the table with everything else.
 
 Not all mods can be looked for: `item_armor_percent` is drawn on the tooltip but is not in the
 item's stat list at all, which is why this is a score and not a complete match. The stats live in
@@ -151,13 +161,20 @@ or corrupted item it printed a range the item's own number sat outside -- `+35%`
 `[3 - 30]`, `+26%` under `[10 - 24]`. That gap is the reason this addon exists, and the sources
 are known here, so the range is now corrected in place by the same numbers the labels name:
 
-* **An affix on the item feeds this stat** -- its range is about something real, and the craft
-  and the corruption are added to it. `[3 - 30]` plus Brilliant's 5-10 is `[8 - 40]`, which is
-  where the 35 always was.
-* **None does** -- its range is a ladder for an affix the item does not carry, and the only true
-  statement left is what the craft and the corruption could have rolled. On a corrupted
-  `+26% Faster Hit Recovery` with no hit recovery affix, `[10 - 24]` becomes the corruption's own
-  `[20 - 30]`.
+* **An affix on the item feeds this stat** -- its range is the ladder of that affix's group, and
+  the craft and the corruption are added at both ends. `[3 - 30]` plus Brilliant's 5-10 is
+  `[8 - 40]`, which is where the 35 always was.
+* **None does** -- its range is then the whole span the stat could have reached on an item of
+  this kind, which is how a corrupted `+26% Faster Hit Recovery` gets `[10 - 24]` with no hit
+  recovery affix anywhere on it. That affix was never guaranteed, so the floor is what the craft
+  and the corruption give on their own while the ceiling still adds to BH's: `[10 - 24]` becomes
+  `[20 - 54]`, and a Safety plate's `[4 - 25]` of damage reduction becomes `[4 - 31]`.
+
+The second rule was wrong in its first version -- it dropped the ceiling as well as the floor,
+and turned `[4 - 25]` into `[4 - 6]`. That is how the two cases were told apart at all: the
+maphack prints `[3 - 30]` for one chest's fire resistance and `[3 - 40]` for another's, which
+only makes sense if it is reading the affix the item carries, and it prints nothing at all for
+blocking chance on a body armour, which no affix there can grant.
 
 **And the number the game drew has to fall inside the result, or nothing is written.** If it does
 not, something here is wrong -- an affix missing from the table, a stat held in units the line
@@ -217,9 +234,10 @@ A per cent sign comes from `ItemStatCost`'s `descfunc`, not from the game string
 
 ## The table
 
-`affixes.txt`, beside the DLL, written by `install` and regenerated whenever it runs. Four kinds
+`affixes.txt`, beside the DLL, written by `install` and regenerated whenever it runs. Six kinds
 of row: `p` and `s` are affixes found by the id on the item, `c` is a craft recipe's fixed mods
-and `t` says which items that recipe reaches.
+and `t` says which items that recipe reaches, `x` is a corruption by type and item class with
+`k` saying which classes an item belongs to, and `v` is a stat whose stored value is shifted.
 
 Everything that needs the game's tables is worked out in Python, where they are already parsed
 and under test, and handed over as flat text. The plugin reads rows; it does not read tables.

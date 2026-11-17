@@ -46,7 +46,9 @@ STATS = [
     {"ID": "43", "Stat": "coldresist", "descfunc": "4"},
     {"ID": "45", "Stat": "poisonresist", "descfunc": "4"},
     {"ID": "252", "Stat": "item_replenish_durability", "descfunc": "11"},
-    {"ID": "11", "Stat": "maxstamina", "descfunc": "1"},
+    # stored shifted left by eight, like life and mana: the plugin compares stored values
+    # against this table to fingerprint a craft, and the shift has to cross with them
+    {"ID": "11", "Stat": "maxstamina", "descfunc": "1", "ValShift": "8"},
 ]
 
 
@@ -117,7 +119,7 @@ def archive(tmp_path: Path) -> Path:
     mpq_asset.add(path, affix_labels.EXCEL + "Properties.txt",
                   _tsv(["code", "stat1", "stat2", "stat3", "stat4"], PROPERTIES))
     mpq_asset.add(path, affix_labels.EXCEL + "ItemStatCost.txt",
-                  _tsv(["ID", "Stat", "descfunc"], STATS))
+                  _tsv(["ID", "Stat", "descfunc", "ValShift"], STATS))
     mpq_asset.add(path, affix_labels.EXCEL + "CubeMain.txt",
                   _tsv(CUBE_COLUMNS, RECIPES + CORRUPTIONS))
     mpq_asset.add(path, affix_labels.EXCEL + "ItemTypes.txt",
@@ -199,7 +201,8 @@ def test_the_table_lands_beside_the_plugin(archive, tmp_path) -> None:
                        + len(affix_ranges.craft_rows(archive))
                        + len(affix_ranges.craft_codes(archive))
                        + len(affix_ranges.corruption_rows(archive))
-                       + len(affix_ranges.corruption_items(archive)))
+                       + len(affix_ranges.corruption_items(archive))
+                       + len(affix_ranges.value_shifts(archive)))
     # Path.read_text takes no `newline` before 3.13, and folding CRLF away here would hide
     # exactly what is being checked: the plugin reads this with fgets.
     with open(table, encoding="latin1", newline="") as handle:
@@ -243,7 +246,7 @@ def test_ethereal_is_not_a_stat_and_does_not_become_a_row(archive) -> None:
 def test_the_table_carries_crafts_alongside_affixes(archive) -> None:
     kinds = {line.split(" ", 1)[0] for line in affix_ranges.render(archive).splitlines()
              if not line.startswith("#")}
-    assert kinds == {"p", "s", "c", "t", "x", "k"}
+    assert kinds == {"p", "s", "c", "t", "x", "k", "v"}
 
 
 def test_a_recipe_reaches_the_items_its_type_covers_and_no_others(archive) -> None:
@@ -329,3 +332,20 @@ def test_the_settings_file_names_every_mode_the_plugin_understands(archive, tmp_
     for mode in ("always", "shift", "ctrl", "alt"):
         assert f"hold: {mode}" in text
         assert f'"{mode}"' in plugin
+
+
+def test_a_stat_stored_shifted_says_so_and_the_rest_say_nothing(archive) -> None:
+    """A value compared in the wrong units is not compared.
+
+    Life, mana and stamina are held shifted left by eight, so a +27 rolls as 6912 -- which is
+    outside every range in the table, and would make every recipe with a life mod look like a
+    match for an item that has one. Only the stats that are shifted get a row; a row of zero for
+    all the rest would be most of ItemStatCost for nothing.
+    """
+    assert affix_ranges.value_shifts(archive) == [(11, 8)]
+
+
+def test_the_shift_reaches_the_table(archive) -> None:
+    rows = [line.split() for line in affix_ranges.render(archive).splitlines()
+            if line.startswith("v ")]
+    assert rows == [["v", "11", "8", "0", "0", "0"]]

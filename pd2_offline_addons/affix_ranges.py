@@ -65,6 +65,24 @@ def _stat_ids(archive: Path) -> dict[str, tuple[int, bool]]:
     return out
 
 
+def value_shifts(archive: Path) -> list[tuple[int, int]]:
+    """(stat id, how many bits its stored value is shifted left by), for the stats that are.
+
+    A stat's number in the item's stat list is not always the number the tooltip draws: life,
+    mana and stamina are held shifted by eight, so a +27 to Life reads 6912. The plugin compares
+    stored values against the ranges in this table to work out which recipe made a crafted item,
+    and a comparison in the wrong units is not a comparison -- 6912 is outside every range there
+    is, so every recipe with a life mod would look like a match.
+    """
+    out: list[tuple[int, int]] = []
+    for row in _table(archive, "ItemStatCost"):
+        raw = (row.get("ID") or "").strip()
+        shift = (row.get("ValShift") or "").strip()
+        if raw.isdigit() and shift.isdigit() and int(shift):
+            out.append((int(raw), int(shift)))
+    return sorted(out)
+
+
 def prefix_base(archive: Path) -> int:
     """What a prefix's row index has added to it to become the id the game keeps on the item.
 
@@ -375,6 +393,7 @@ def render(archive: Path) -> str:
         "#   t:   which base items a recipe applies to; stat_id column holds the item number",
         "#   x:   a corruption, by the type the item carries in stat 360 and the item class",
         "#   k:   which corruption classes a base item belongs to",
+        "#   v:   a stat whose stored value is shifted left, and by how many bits",
     ]
     lines += [f"{kind} {affix} {stat} {lo} {hi} {pct} {name}"
               for kind, affix, stat, lo, hi, pct, name in rows(archive)]
@@ -386,6 +405,7 @@ def render(archive: Path) -> str:
               for kind, cls, stat, lo, hi, pct in corruption_rows(archive)]
     # Padded to the same six columns as every other row so one parser reads them all.
     lines += [f"k {number} {cls} 0 0 0" for number, cls in corruption_items(archive)]
+    lines += [f"v {stat} {shift} 0 0 0" for stat, shift in value_shifts(archive)]
     return "\n".join(lines) + "\n"
 
 
