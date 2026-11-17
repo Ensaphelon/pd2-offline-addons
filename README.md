@@ -13,12 +13,13 @@ expensive to rediscover:
 | Holy Grail beam | `pd2-holy-grail-tracker` | A shaft of light over a drop that would be new to the collection |
 | Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server, and writes each area's best down for `pd2-holy-inventory` |
 
-One add-on is not in the DLL at all, because it does not need to be — see
-[docs/item-colours.md](docs/item-colours.md):
+Two add-ons are not in the DLL at all, because they do not need to be — one edits a game table
+inside its archive, the other generates rules into the loot filter:
 
 | Feature | What it does |
 |---|---|
-| Item colours | Draws a unique item in another of the game's own 21 colours, by the column PD2's table already uses for it |
+| Item colours | Draws a unique item in another of the game's own 21 colours, by the column PD2's table already uses for it — [docs](docs/item-colours.md) |
+| Affix labels | Puts each affix's name and the range it rolls in into the item's own tooltip, on magic, rare and crafted alike — [docs](docs/affix-labels.md) |
 
 ## Why one repository, and one DLL
 
@@ -81,6 +82,15 @@ choices; `uncolour` puts the data archive back.
 ```sh
 python3 -m pd2_offline_addons recolour --game "…" --colour Toothrow=dgry
 python3 -m pd2_offline_addons uncolour --game "…"
+```
+
+Affix labels are their own pair too, because they are written into `loot.filter` — a file
+PD2Launcher rewrites from whichever filter is selected, which drops the block silently, so this
+one needs putting back after a filter update.
+
+```sh
+python3 -m pd2_offline_addons affixes   --game "…"
+python3 -m pd2_offline_addons unaffixes --game "…"
 ```
 
 `./build.sh` comes first and is not optional: `pd2addons.dll` is ignored by git rather than

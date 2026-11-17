@@ -5,6 +5,8 @@
   uninstall   all of it, Game.exe back from its backup
   recolour    a unique item drawn in another of the game's own colours
   uncolour    the data archive back from its backup
+  affixes     affix names and their roll ranges into the loot filter's tooltips
+  unaffixes   that block back out of the filter
 
 
 Every command reads the real files rather than remembering what it did last time, so a game the
@@ -18,10 +20,15 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import game_patcher, item_colour, mpq_asset
+from . import affix_labels, game_patcher, item_colour, mpq_asset
+from .affix_labels import AffixLabelError
 from .game_patcher import GamePatchError
 from .item_colour import ItemColourError
 from .safety_pipeline import is_game_running
+
+# The filter the game actually reads. PD2Launcher copies whichever filter is selected in it over
+# this one, so it is also the file an update overwrites.
+LOOT_FILTER_NAME = "loot.filter"
 
 
 def _resolve(raw: str | None) -> Path:
@@ -69,6 +76,20 @@ def _report_colours(game_exe: Path, wanted: dict[str, str] | None) -> None:
         print(f"colour     {name}: {now}{same}")
 
 
+def _report_affixes(game_exe: Path) -> None:
+    try:
+        state = affix_labels.status(game_exe.parent / LOOT_FILTER_NAME)
+    except (AffixLabelError, OSError) as error:
+        print(f"affixes    cannot be read ({error})")
+        return
+    if state.filter_path is None:
+        print(f"affixes    no {LOOT_FILTER_NAME} beside the game")
+    elif state.installed:
+        print(f"affixes    {state.rules} rules in {LOOT_FILTER_NAME}")
+    else:
+        print(f"affixes    not in {LOOT_FILTER_NAME}")
+
+
 def _report(game_exe: Path, wanted: dict[str, str] | None = None) -> int:
     state = game_patcher.status(game_exe)
     print(f"Game.exe   {game_exe}")
@@ -77,6 +98,7 @@ def _report(game_exe: Path, wanted: dict[str, str] | None = None) -> int:
     print(f"installed  {'yes' if state.installed else 'no'}")
     print(f"backup     {'present' if state.backup_present else 'none'}")
     _report_colours(game_exe, wanted)
+    _report_affixes(game_exe)
     if game_patcher.launcher_restores_game_exe(game_exe):
         print("note       PD2Launcher's file check is on and puts its own Game.exe back on every"
               " launch — turn it off in the launcher, or this will be undone.")
@@ -86,7 +108,8 @@ def _report(game_exe: Path, wanted: dict[str, str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pd2-offline-addons", description=__doc__)
     parser.add_argument("command",
-                        choices=("status", "install", "uninstall", "recolour", "uncolour"))
+                        choices=("status", "install", "uninstall", "recolour", "uncolour",
+                                 "affixes", "unaffixes"))
     parser.add_argument("--game", help="Game.exe, or the folder holding it")
     parser.add_argument("--colour", action="append", metavar="NAME=CODE",
                         help="for recolour: a unique item and the Colors.txt code to draw it in,"
@@ -111,6 +134,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "recolour":
             item_colour.enable(game_exe.parent, wanted)
             print("Recoloured.")
+        elif args.command == "affixes":
+            install_dir = game_exe.parent
+            state = affix_labels.enable(install_dir / LOOT_FILTER_NAME, install_dir,
+                                        install_dir / item_colour.ARCHIVE_NAME)
+            print(f"Affix labels in: {state.rules} rules.")
+        elif args.command == "unaffixes":
+            removed = affix_labels.disable(game_exe.parent / LOOT_FILTER_NAME)
+            print(f"{LOOT_FILTER_NAME} "
+                  f"{'no longer carries the block.' if removed else 'did not carry it.'}")
         elif args.command == "uncolour":
             restored = item_colour.disable(game_exe.parent)
             print(f"{item_colour.ARCHIVE_NAME} "
@@ -120,9 +152,11 @@ def main(argv: list[str] | None = None) -> int:
             # A full uninstall leaves nothing of ours behind, including in the data archive —
             # otherwise "uninstall" would quietly keep one feature installed.
             item_colour.disable(game_exe.parent)
+            affix_labels.disable(game_exe.parent / LOOT_FILTER_NAME)
             print("Removed, and Game.exe put back from its backup.")
         return _report(game_exe, wanted)
-    except (GamePatchError, ItemColourError, mpq_asset.MpqError, OSError) as error:
+    except (GamePatchError, ItemColourError, AffixLabelError,
+            mpq_asset.MpqError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
