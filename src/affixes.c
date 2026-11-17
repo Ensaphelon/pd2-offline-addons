@@ -366,6 +366,19 @@ static int describe(const affix_entry *e, int stat_id, char *out, size_t cap)
     return 0;
 }
 
+/* The same lookup as a pair of numbers rather than a sentence. Naming the stat with no roll of
+   its own -- `rep-dur` and its like -- is still an answer, and contributes nothing. */
+static int contribution(const affix_entry *e, int stat_id, int *lo, int *hi)
+{
+    for (int i = 0; i < e->count; i++) {
+        if (e->stat[i] != stat_id) continue;
+        *lo = e->lo[i];
+        *hi = e->hi[i];
+        return 1;
+    }
+    return 0;
+}
+
 /* Appends one piece of the suffix if the whole of it fits, and reports whether it did. Partial
    pieces are never written: half a range is worse than no range. */
 static int add_segment(char *suffix, size_t *used, size_t room,
@@ -381,6 +394,102 @@ static int add_segment(char *suffix, size_t *used, size_t room,
     *used += strlen(text);
     suffix[*used] = 0;
     return 1;
+}
+
+/* --- the range already on the line ------------------------------------------------------------
+ *
+ * BH's `[3 - 30]` is affix-only: it has no table of craft recipes or corruptions, so on a
+ * crafted or corrupted item the number beside it can sit outside it -- `+35%` under `[3 - 30]`,
+ * `+26%` under `[10 - 24]`. The sources are known here, so the range is corrected in place
+ * rather than contradicted beside itself.
+ *
+ * Two rules, and the second is the one that keeps this honest:
+ *
+ *   - if an affix on the item feeds this stat, BH's range is about something real and the craft
+ *     and the corruption are ADDED to it;
+ *   - if none does, its range is a ladder for an affix this item does not carry, and the only
+ *     true statement is what the craft and the corruption could have rolled;
+ *   - and the number the game drew on the line has to fall inside the result. If it does not,
+ *     something here is wrong -- an affix missing from the table, a stat stored in units the
+ *     line does not use -- and BH's own range is left exactly as it was. */
+
+static const wchar_t *parse_int(const wchar_t *p, const wchar_t *end, int *out)
+{
+    int sign = 1, value = 0;
+    if (p < end && *p == L'-') { sign = -1; p++; }
+    if (p >= end || *p < L'0' || *p > L'9') return NULL;
+    while (p < end && *p >= L'0' && *p <= L'9') value = value * 10 + (*p++ - L'0');
+    *out = sign * value;
+    return p;
+}
+
+/* The last `[a - b]` or `[a]` in the line, which is where BH appends its own. */
+static int read_range(const wchar_t *line, size_t *open_at, size_t *close_at, int *lo, int *hi)
+{
+    size_t rb = wcslen(line);
+    while (rb > 0 && line[rb - 1] != L']') rb--;
+    if (!rb) return 0;
+    rb--;
+    size_t lb = rb;
+    while (lb > 0 && line[lb - 1] != L'[') lb--;
+    if (!lb) return 0;
+    lb--;
+
+    const wchar_t *end = line + rb;
+    const wchar_t *p = parse_int(line + lb + 1, end, lo);
+    if (!p) return 0;
+    if (p == end) *hi = *lo;
+    else {
+        if (end - p < 3 || p[0] != L' ' || p[1] != L'-' || p[2] != L' ') return 0;
+        p = parse_int(p + 3, end, hi);
+        if (!p || p != end) return 0;
+    }
+    *open_at = lb;
+    *close_at = rb;
+    return 1;
+}
+
+/* The number the game drew: the first one in the line, in the units the line is written in --
+   which is what the range is written in too, and what the stat in memory is often not. Colour
+   escapes are stepped over, their third character being a digit as often as not. */
+static int shown_value(const wchar_t *line, size_t before, int *out)
+{
+    for (size_t i = 0; i < before; i++) {
+        if (line[i] == 0xFF) { i += ESCAPE - 1; continue; }
+        if (line[i] < L'0' || line[i] > L'9') continue;
+        int negative = i > 0 && line[i - 1] == L'-', value = 0;
+        while (i < before && line[i] >= L'0' && line[i] <= L'9') value = value * 10 + (line[i++] - L'0');
+        *out = negative ? -value : value;
+        return 1;
+    }
+    return 0;
+}
+
+static void rewrite_range(wchar_t *line, size_t open_at, size_t close_at, int lo, int hi)
+{
+    char text[32];
+    int n = lo == hi ? _snprintf(text, sizeof text, "[%d]", lo)
+                     : _snprintf(text, sizeof text, "[%d - %d]", lo, hi);
+    if (n <= 0) return;
+
+    size_t len = wcslen(line), old = close_at - open_at + 1;
+    if (len - old + (size_t)n >= LINE_CAPACITY) return;
+    memmove(line + open_at + n, line + close_at + 1, (len - close_at) * sizeof(wchar_t));
+    for (int i = 0; i < n; i++) line[open_at + i] = (wchar_t)text[i];
+}
+
+static void correct_range(wchar_t *line, int affixes, int add_lo, int add_hi)
+{
+    size_t open_at = 0, close_at = 0;
+    int lo = 0, hi = 0, shown = 0;
+
+    if (!add_lo && !add_hi) return;
+    if (!read_range(line, &open_at, &close_at, &lo, &hi)) return;
+    if (!affixes) lo = hi = 0;
+    lo += add_lo;
+    hi += add_hi;
+    if (shown_value(line, open_at, &shown) && (shown < lo || shown > hi)) return;
+    rewrite_range(line, open_at, close_at, lo, hi);
 }
 
 /* Bounded diagnostic: the first few lines of the first tooltip, and then silence.
@@ -447,7 +556,7 @@ static int item_stat_value(void *item, int stat_id, int *value)
  * Nothing is worked out here: the item says which corruption it carries, and the table says what
  * that corruption does to an item of this class. Where the item belongs to several classes the
  * lowest-numbered wins, the table being ordered narrowest first. */
-static int corruption_for(void *item, int stat_id, char *out, size_t cap)
+static int corruption_for(void *item, int stat_id, int *out_lo, int *out_hi, int *out_pct)
 {
     int type = 0;
     if (!item || !item_stat_value(item, STAT_CORRUPTED, &type) || type <= 0) return 0;
@@ -470,9 +579,10 @@ static int corruption_for(void *item, int stat_id, char *out, size_t cap)
         }
     }
     if (best < 0) return 0;
-    const char *sign = pct ? "%" : "";
-    if (lo == hi) return _snprintf(out, cap, "Corrupted [%d]%s", lo, sign);
-    return _snprintf(out, cap, "Corrupted [%d - %d]%s", lo, hi, sign);
+    *out_lo = lo;
+    *out_hi = hi;
+    *out_pct = pct;
+    return 1;
 }
 
 /* Which craft recipe made this item, by fingerprint: the one whose every fixed mod is a stat the
@@ -557,6 +667,22 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
 #endif
     if (!table_rows || !line) return;
 
+    /* Every source on this item that feeds this stat, gathered before a character is written:
+       the range already on the line is corrected from the same numbers the labels name, and the
+       correction has to happen first because it moves the end of the line. */
+    int affixes = 0;
+    for (int slot = 0; slot < 6; slot++) {
+        const affix_entry *e = affix_at(item, slot);
+        int lo = 0, hi = 0;
+        if (e && contribution(e, stat_id, &lo, &hi)) affixes++;
+    }
+    const affix_entry *craft = craft_for(item);
+    int craft_lo = 0, craft_hi = 0, corr_lo = 0, corr_hi = 0, corr_pct = 0;
+    int has_craft = craft && contribution(craft, stat_id, &craft_lo, &craft_hi);
+    int has_corruption = corruption_for(item, stat_id, &corr_lo, &corr_hi, &corr_pct);
+
+    correct_range(line, affixes, craft_lo + corr_lo, craft_hi + corr_hi);
+
     /* Built as segments that are fitted one at a time rather than assembled and then accepted
        or rejected whole. The line is a 130-wchar buffer and the colour escapes cost three
        characters each, so a stat fed by three affixes, a craft and a corruption overruns it --
@@ -580,16 +706,20 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
     }
     /* The craft's own mods, after the affixes: on a crafted item they are most of why the
        number on the line is bigger than any affix could explain. */
-    const affix_entry *craft = craft_for(item);
-    if (craft) {
+    if (has_craft) {
         char one[64];
         if (describe(craft, stat_id, one, sizeof one) > 0)
             dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", PURPLE, one);
     }
     /* And the corruption, which the item names outright. */
-    char corrupted[64];
-    if (corruption_for(item, stat_id, corrupted, sizeof corrupted) > 0)
-        dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", RED, corrupted);
+    if (has_corruption) {
+        char one[64];
+        const char *sign = corr_pct ? "%" : "";
+        if (corr_lo == corr_hi) _snprintf(one, sizeof one, "Corrupted [%d]%s", corr_lo, sign);
+        else _snprintf(one, sizeof one, "Corrupted [%d - %d]%s", corr_lo, corr_hi, sign);
+        one[sizeof one - 1] = 0;
+        dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", RED, one);
+    }
 
     /* Something was left out: say so rather than let the line look complete. */
     if (dropped) add_segment(suffix, &used, room, "", RED, "+");

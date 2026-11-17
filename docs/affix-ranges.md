@@ -4,12 +4,16 @@ Which affix gave a line of an item's tooltip, and what it could have rolled — 
 of that line, beside the range the maphack already prints there.
 
 ```
-+87% Enhanced Defense [10 - 200]  Blessed [51 - 65]%, Brilliant [25 - 50]%
++87% Enhanced Defense [35 - 250]  Blessed [51 - 65]%, Brilliant [25 - 50]%
 18% Increased Chance of Blocking  Brilliant [10 - 20]%
-Lightning Resist +48% [6 - 70]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant [5 - 10]%
-Poison Resist +64%* [3 - 30]  Chromatic [21 - 30]%, Brilliant [5 - 10]%, Corrupted [30 - 35]%
+Lightning Resist +48% [11 - 80]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant [5 - 10]%
+Poison Resist +64%* [38 - 75]  Chromatic [21 - 30]%, Brilliant [5 - 10]%, Corrupted [30 - 35]%
 Repairs 1 durability in 33 seconds  of Self-Repair
 ```
+
+The range in the middle is the maphack's, corrected: it knows only affixes, so on a crafted or
+corrupted item it printed a range the item's own number sat outside. See
+[below](#the-range-already-on-the-line-is-corrected-rather-than-contradicted).
 
 Nothing to turn on: `install` puts the table beside the plugin, and the plugin reads it.
 
@@ -131,24 +135,43 @@ applied through `Properties.txt` generically, taking the stat number from the ta
 from an instruction, so a write would never appear as a literal 360 in the code. The ranges were
 in `CubeMain` the whole time, in 995 rows that each set `corrupt N-N` alongside the mod.
 
-## It does not agree with the range already on the line, and should not
+## The range already on the line is corrected rather than contradicted
 
-The maphack's own `[6 - 70]` and this addon's numbers measure different things, and on a crafted
-item they visibly disagree. Worth writing down, because the disagreement looks like a bug.
+The two numbers measure different things, and until the sources were known there was nothing to
+do about it but explain the difference.
 
-**Ours** is what each source the item actually carries could have rolled. On a real crafted Light
-Plate the lightning line is Ocher's 11-20, Chromatic's 21-30 and the craft's 5-10 -- 37 to 60
-between them, and the item has 48.
+**The maphack's** is what the item could have had over the whole tier ladder of the affixes it
+carries. `res-all` spans 3-30 across its tiers, which is exactly what it prints on resistances
+nothing else feeds. Lightning has a second ladder on a crafted Light Plate -- Ocher's group,
+whose top tier on a body armour is Amber 31-40 -- so 3+3 and 30+40 make the 6 and the 70 it used
+to print there.
 
-**The maphack's** is what the item could have had from the same kinds of source, over the whole
-tier ladder. `res-all` spans 3-30 across its tiers, which is exactly what it prints on the other
-three resistances, where nothing else feeds them. Lightning has a second ladder on that item --
-Ocher's group, whose top tier on a body armour is Amber 31-40 -- so 3+3 and 30+40 make the 6 and
-the 70.
+**And it only knows affixes.** It has no table of craft recipes or corruptions, so on a crafted
+or corrupted item it printed a range the item's own number sat outside -- `+35%` under
+`[3 - 30]`, `+26%` under `[10 - 24]`. That gap is the reason this addon exists, and the sources
+are known here, so the range is now corrected in place by the same numbers the labels name:
 
-**And it only knows affixes.** It has no table of craft recipes or corruptions, which is visible
-on the same tooltip: `Poison Resist +35% [3 - 30]`, a value outside the range printed beside it,
-because the craft's 5-10 was never in its sum. That gap is the reason this addon exists.
+* **An affix on the item feeds this stat** -- its range is about something real, and the craft
+  and the corruption are added to it. `[3 - 30]` plus Brilliant's 5-10 is `[8 - 40]`, which is
+  where the 35 always was.
+* **None does** -- its range is a ladder for an affix the item does not carry, and the only true
+  statement left is what the craft and the corruption could have rolled. On a corrupted
+  `+26% Faster Hit Recovery` with no hit recovery affix, `[10 - 24]` becomes the corruption's own
+  `[20 - 30]`.
+
+**And the number the game drew has to fall inside the result, or nothing is written.** If it does
+not, something here is wrong -- an affix missing from the table, a stat held in units the line
+does not use, life and mana being stored shifted by eight -- and being wrong quietly is worse
+than printing nothing. The maphack's own range is left exactly as it was.
+
+That check is read off the line rather than out of the item, deliberately: the line carries the
+number in the units it is written in, which is the units the range is in, and the stat in memory
+often is not.
+
+Two things follow from where this sits. The corrected range appears and disappears with the hold
+key along with everything else, so letting go gives back the maphack's own output untouched. And
+once corrected the number is this addon's, not BH's, though it keeps BH's colour -- extending the
+range was the point, and a second colour there would make four on one line.
 
 ## What it deliberately does not do
 
