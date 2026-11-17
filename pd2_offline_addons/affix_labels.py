@@ -54,6 +54,7 @@ that does not fit what the item does is one constant offset away, not a scramble
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import struct
@@ -61,6 +62,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import mpq_asset
+
+LOOT_FILTER_NAME = "loot.filter"
 
 BEGIN = "// >>> pd2-offline-addons: affix labels >>>"
 END = "// <<< pd2-offline-addons: affix labels <<<"
@@ -311,6 +314,32 @@ def generate(install_dir: Path, archive: Path) -> str:
                      f"%NAME%{{%NAME%%CL%%ORANGE%{text}}}%CONTINUE%")
     lines.append(END)
     return "\n".join(lines) + "\n"
+
+
+def selected_filter(install_dir: Path) -> Path:
+    """The filter file to write into, taken from PD2Launcher's own selection.
+
+    Which file matters, because the launcher copies the selected filter over `loot.filter` when
+    it starts the game. Write into `loot.filter` while a LOCAL filter is selected and the copy
+    lands on top of the block; write into the local file and the copy carries it.
+
+    A local selection records `selectedAuthor.url == "local"` and an absolute path to the file
+    under `filters/local/`. Anything else is a filter the launcher downloads, and for those
+    `loot.filter` is the only file worth editing -- the launcher replaces the downloaded copy on
+    its own schedule, and a block in it would be lost without warning either way.
+    """
+    settings = install_dir / "AppData" / "launcherSettings.json"
+    if settings.is_file():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8-sig"))
+            chosen = data.get("SelectedAuthorAndFilter", {})
+            if (chosen.get("selectedAuthor", {}).get("url") or "").lower() == "local":
+                path = Path(chosen.get("selectedFilter", {}).get("path") or "")
+                if path.is_file():
+                    return path
+        except (OSError, ValueError):
+            pass
+    return install_dir / LOOT_FILTER_NAME
 
 
 def _read(path: Path) -> str:

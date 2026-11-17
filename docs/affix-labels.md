@@ -8,10 +8,17 @@ python3 -m pd2_offline_addons affixes   --game "<path to>/ProjectD2/Game.exe"
 python3 -m pd2_offline_addons unaffixes --game "<path to>/ProjectD2/Game.exe"
 ```
 
-`status` reports it out of the filter file itself:
+Which file it writes into is PD2Launcher's own choice, read out of `launcherSettings.json`
+rather than assumed. This matters: **the launcher copies the selected filter over `loot.filter`
+when it starts the game**, so a block written into `loot.filter` while a *local* filter is
+selected is overwritten on launch. A local selection records `selectedAuthor.url == "local"` and
+an absolute path under `filters/local/`; anything else is a filter the launcher downloads, and
+for those `loot.filter` is the only file worth editing. `--filter PATH` overrides.
+
+`status` reports it out of the file itself:
 
 ```
-affixes    1615 rules in loot.filter
+affixes    1615 rules in local/Kassahi_Mystery_Hyper.filter
 ```
 
 ## What it looks like
@@ -142,10 +149,16 @@ item code — jewel fragments, uber keys, perfect gems, crafting recipes — nev
 `unaffixes` removes the block and leaves the rest of the file exactly as it was; `uninstall` does
 it too.
 
-**PD2Launcher rewrites `loot.filter` from whichever filter is selected in it**, which takes the
-block with it silently — `loot.filter` is a copy of `filters/online/<selected>.filter`, byte for
-byte. So the block needs putting back after a filter update, and Kassahi's builds land often.
-That is why `status` reads the file instead of remembering what it wrote.
+**PD2Launcher rewrites `loot.filter` from whichever filter is selected in it**, byte for byte, so
+a block in `loot.filter` is only as durable as the next launch. A filter copied into
+`filters/local/` and selected there is not downloaded again, so the block survives — at the cost
+of no longer receiving that author's updates through the launcher. Either way `status` reads the
+file instead of remembering what it wrote, and re-running `affixes` after an update is the fix.
+
+One thing the launcher does leave alone: its client-file updater has an explicit skip list —
+`D2.LNG`, `BnetLog.txt`, `ProjectDiablo.cfg`, `ddraw.ini`, `default.filter`, `loot.filter`,
+`UI.ini`, `d2gl.yaml`, `PD2Shared.dll`, `launcherSettings.json`, `.backup` — so syncing the
+client from `pd2-client-files.projectdiablo2.com` never touches a filter.
 
 The block is 1615 rules on top of the host's ~6000, and every one is evaluated for every item.
 The affix comparison is the whole condition, so there is nothing to short-circuit on an item

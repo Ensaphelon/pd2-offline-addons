@@ -9,6 +9,7 @@ run on a machine that has never had Diablo II on it, and the shape is the thing 
 """
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 
@@ -249,3 +250,44 @@ def test_a_missing_filter_is_refused(install) -> None:
     assert affix_labels.disable(loot) is False
     with pytest.raises(affix_labels.AffixLabelError, match="no filter"):
         affix_labels.enable(loot, install_dir, archive)
+
+
+def _launcher_settings(install_dir: Path, body: str) -> None:
+    (install_dir / "AppData").mkdir(exist_ok=True)
+    (install_dir / "AppData" / "launcherSettings.json").write_text(body, encoding="utf-8")
+
+
+def test_a_local_filter_selection_is_where_the_block_has_to_go(install) -> None:
+    """The launcher copies the selected filter over loot.filter when it starts the game, so a
+    block written into loot.filter while a LOCAL filter is selected is overwritten on launch."""
+    install_dir, loot, _archive = install
+    local = install_dir / "filters" / "local" / "Mine.filter"
+    local.parent.mkdir(parents=True)
+    local.write_text(HOST_FILTER, encoding="latin1", newline="")
+    _launcher_settings(install_dir, json.dumps({"SelectedAuthorAndFilter": {
+        "selectedAuthor": {"url": "local"},
+        "selectedFilter": {"name": "Mine.filter", "path": str(local)}}}))
+    assert affix_labels.selected_filter(install_dir) == local
+
+
+def test_a_downloaded_filter_selection_means_loot_filter(install) -> None:
+    install_dir, loot, _archive = install
+    _launcher_settings(install_dir, json.dumps({"SelectedAuthorAndFilter": {
+        "selectedAuthor": {"url": "https://api.github.com/repos/someone/filter/contents"},
+        "selectedFilter": {"name": "Theirs.filter", "path": "filtergroups/x/Theirs.filter"}}}))
+    assert affix_labels.selected_filter(install_dir) == loot
+
+
+def test_an_unreadable_or_absent_launcher_settings_falls_back_to_loot_filter(install) -> None:
+    install_dir, loot, _archive = install
+    assert affix_labels.selected_filter(install_dir) == loot
+    _launcher_settings(install_dir, "{ this is not json")
+    assert affix_labels.selected_filter(install_dir) == loot
+
+
+def test_a_local_selection_pointing_at_a_missing_file_falls_back(install) -> None:
+    install_dir, loot, _archive = install
+    _launcher_settings(install_dir, json.dumps({"SelectedAuthorAndFilter": {
+        "selectedAuthor": {"url": "local"},
+        "selectedFilter": {"name": "Gone.filter", "path": str(install_dir / "nope.filter")}}}))
+    assert affix_labels.selected_filter(install_dir) == loot
