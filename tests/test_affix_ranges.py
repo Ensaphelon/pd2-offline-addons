@@ -217,7 +217,7 @@ def test_a_per_cent_stat_is_marked_and_a_plain_one_is_not(archive) -> None:
 
 def test_a_craft_recipe_becomes_one_row_per_stat_it_fixes(archive) -> None:
     rows = affix_ranges.craft_rows(archive)
-    brilliant = [r for r in rows if r[5] == "Brilliant craft"]
+    brilliant = [r for r in rows if r[5] == "Brilliant"]
     assert sorted(r[1] for r in brilliant) == [16, 39, 41, 43, 45]
     assert {(r[2], r[3]) for r in brilliant if r[1] == 16} == {(25, 50)}
     assert {(r[2], r[3]) for r in brilliant if r[1] == 39} == {(5, 10)}
@@ -227,7 +227,7 @@ def test_the_same_recipe_spelled_twice_is_one_fingerprint(archive) -> None:
     """The game lists a recipe once per input quality and again for the ethereal variant; they
     are one recipe as far as identifying an item goes."""
     rows = affix_ranges.craft_rows(archive)
-    assert len({r[0] for r in rows if r[5] == "Brilliant craft"}) == 1
+    assert len({r[0] for r in rows if r[5] == "Brilliant"}) == 1
 
 
 def test_a_cube_recipe_that_is_not_a_craft_is_left_alone(archive) -> None:
@@ -254,8 +254,8 @@ def test_a_recipe_reaches_the_items_its_type_covers_and_no_others(archive) -> No
         codes.setdefault(recipe, set()).add(code)
     families = {recipe: family for recipe, _s, _lo, _hi, _p, family
                 in affix_ranges.craft_rows(archive)}
-    brilliant = next(r for r, f in families.items() if f == "Brilliant craft")
-    blood = next(r for r, f in families.items() if f == "Blood craft")
+    brilliant = next(r for r, f in families.items() if f == "Brilliant")
+    blood = next(r for r, f in families.items() if f == "Blood")
     assert codes[brilliant] == {"ltp", "clk"}
     assert codes[blood] == {"vbl"}
 

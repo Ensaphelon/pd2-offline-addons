@@ -4,10 +4,10 @@ Which affix gave a line of an item's tooltip, and what it could have rolled — 
 of that line, beside the range the maphack already prints there.
 
 ```
-+87% Enhanced Defense [10 - 200]  Blessed [51 - 65]%, Brilliant craft [25 - 50]%
-18% Increased Chance of Blocking  Brilliant craft [10 - 20]%
-Lightning Resist +48% [6 - 70]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant craft [5 - 10]%
-Poison Resist +64%* [3 - 30]  Chromatic [21 - 30]%, Brilliant craft [5 - 10]%, Corrupted [30 - 35]%
++87% Enhanced Defense [10 - 200]  Blessed [51 - 65]%, Brilliant [25 - 50]%
+18% Increased Chance of Blocking  Brilliant [10 - 20]%
+Lightning Resist +48% [6 - 70]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant [5 - 10]%
+Poison Resist +64%* [3 - 30]  Chromatic [21 - 30]%, Brilliant [5 - 10]%, Corrupted [30 - 35]%
 Repairs 1 durability in 33 seconds  of Self-Repair
 ```
 
@@ -142,10 +142,33 @@ from the craft — naming all three and their ranges is the whole of what the da
 
 ## Colour
 
-The text is orange and ends by restoring blue. Both are needed: a colour holds until something
-changes it, and these lines are drawn one after another into the same tooltip, so an unclosed
-orange runs on through every stat line below it. The restore is `ÿc3`, which is what BH restores
-to after its own range.
+Three sources, three colours, because on one line they are three different claims: an affix is
+what the item rolled, a craft recipe is what the cube added to every item of its kind, and a
+corruption is what was done to it afterwards.
+
+| | |
+|---|---|
+| orange | the affixes |
+| purple | the craft recipe -- the family's name alone, the colour saying the rest |
+| red | the corruption |
+
+Taken from BH's own table rather than from memory -- `ÿc8`, `ÿc;`, `ÿc1`. The line ends
+by restoring blue: a colour holds until something changes it, and these lines are drawn one after
+another into the same tooltip, so an unclosed one runs on through every stat line below it.
+
+The escapes go into the narrow buffer the suffix is assembled in -- 0xFF is not printable ASCII,
+so it survives the widening untouched -- and are written as explicit bytes rather than string
+escapes, which the first attempt got wrong and encoded as the two UTF-8 bytes of U+00FF.
+
+### Fitting
+
+The line is a 130-wchar buffer, and three escapes cost nine characters of it. A stat fed by three
+affixes, a craft and a corruption overruns it -- which would have lost the whole annotation on
+exactly the busiest lines, the ones worth reading.
+
+So the pieces are fitted one at a time rather than assembled and then accepted or rejected whole.
+A piece that does not fit is not written at all, half a range being worse than none, and what was
+left out is marked with a red `+` rather than left to look complete.
 
 A per cent sign comes from `ItemStatCost`'s `descfunc`, not from the game string: the table holds
 "Enhanced Defense" and the game draws "+87% Enhanced Defense".

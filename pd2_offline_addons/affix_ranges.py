@@ -140,7 +140,9 @@ def _recipes(archive: Path) -> list[tuple[str, str, list[tuple[int, int, int, in
         match = re.search(r"\+ (\w+) craft", description)
         if not match:
             continue
-        family = match.group(1).capitalize() + " craft"
+        # The word "craft" is not in the name: the colour already says where the
+        # mod came from, and a line naming three sources has no room to spare.
+        family = match.group(1).capitalize()
         kind = (row.get("input 1") or "").strip('"').split(",")[0].strip()
         mods: list[tuple[int, int, int, int]] = []
         for slot in range(1, 6):

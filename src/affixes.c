@@ -167,6 +167,13 @@ static const wchar_t COLOUR_RESTORE[] = { 0xFF, L'c', L'3', 0 };
    ASCII, so it survives the widening step untouched and arrives as the escape it is -- which is
    what lets one part of the line be coloured differently from the rest. Red for the corruption,
    because it is the one source on the line that was not there when the item was made. */
+/* Three sources, three colours, because on one line they are three different claims: an affix
+   is what the item rolled, a craft recipe is what the cube added to all of its kind, and a
+   corruption is what was done to it afterwards. The leading orange covers the affixes; each
+   later segment switches to its own.
+
+   D2's palette by its escape digit: '8' orange, ';' purple, '1' red. */
+static const char PURPLE[] = { (char)0xFF, 'c', ';', 0 };
 static const char RED[] = { (char)0xFF, 'c', '1', 0 };
 
 /* --- when to show it -------------------------------------------------------------------------- */
@@ -359,6 +366,23 @@ static int describe(const affix_entry *e, int stat_id, char *out, size_t cap)
     return 0;
 }
 
+/* Appends one piece of the suffix if the whole of it fits, and reports whether it did. Partial
+   pieces are never written: half a range is worse than no range. */
+static int add_segment(char *suffix, size_t *used, size_t room,
+                       const char *separator, const char *colour, const char *text)
+{
+    size_t need = strlen(separator) + strlen(colour) + strlen(text);
+    if (*used + need > room) return 0;
+    memcpy(suffix + *used, separator, strlen(separator));
+    *used += strlen(separator);
+    memcpy(suffix + *used, colour, strlen(colour));
+    *used += strlen(colour);
+    memcpy(suffix + *used, text, strlen(text));
+    *used += strlen(text);
+    suffix[*used] = 0;
+    return 1;
+}
+
 /* Bounded diagnostic: the first few lines of the first tooltip, and then silence.
    Behind the repo's development switch -- it reads item memory and writes a line per tooltip
    line, and what it answered (which stat id, which affix slots) is now settled. */
@@ -533,48 +557,47 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
 #endif
     if (!table_rows || !line) return;
 
-    char suffix[128];
-    int used = 0;
+    /* Built as segments that are fitted one at a time rather than assembled and then accepted
+       or rejected whole. The line is a 130-wchar buffer and the colour escapes cost three
+       characters each, so a stat fed by three affixes, a craft and a corruption overruns it --
+       and losing the lot on exactly the busiest lines is the worst of both worlds. What does not
+       fit is marked instead. */
+    size_t at = wcslen(line);
+    if (at + ESCAPE + ESCAPE + 2 > LINE_CAPACITY) return;
+    size_t room = LINE_CAPACITY - at - ESCAPE - ESCAPE - 1;
+
+    char suffix[192];
+    size_t used = 0;
+    int dropped = 0;
+    if (room > sizeof suffix - 1) room = sizeof suffix - 1;
+
     for (int slot = 0; slot < 6; slot++) {
         const affix_entry *e = affix_at(item, slot);
         if (!e) continue;
         char one[64];
-        int n = describe(e, stat_id, one, sizeof one);
-        if (n <= 0) continue;
-        int written = _snprintf(suffix + used, sizeof suffix - used, "%s%s",
-                                used ? ", " : "  ", one);
-        if (written <= 0) break;
-        used += written;
-        if ((size_t)used >= sizeof suffix - 1) break;
+        if (describe(e, stat_id, one, sizeof one) <= 0) continue;
+        dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", "", one);
     }
     /* The craft's own mods, after the affixes: on a crafted item they are most of why the
        number on the line is bigger than any affix could explain. */
     const affix_entry *craft = craft_for(item);
     if (craft) {
         char one[64];
-        int n = describe(craft, stat_id, one, sizeof one);
-        if (n > 0) {
-            int written = _snprintf(suffix + used, sizeof suffix - used, "%s%s",
-                                    used ? ", " : "  ", one);
-            if (written > 0) used += written;
-        }
+        if (describe(craft, stat_id, one, sizeof one) > 0)
+            dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", PURPLE, one);
     }
     /* And the corruption, which the item names outright. */
     char corrupted[64];
-    int n = corruption_for(item, stat_id, corrupted, sizeof corrupted);
-    if (n > 0) {
-        int written = _snprintf(suffix + used, sizeof suffix - used, "%s%s%s",
-                                used ? ", " : "  ", RED, corrupted);
-        if (written > 0) used += written;
-    }
-    if (!used) return;
+    if (corruption_for(item, stat_id, corrupted, sizeof corrupted) > 0)
+        dropped |= !add_segment(suffix, &used, room, used ? ", " : "  ", RED, corrupted);
 
-    size_t at = wcslen(line);
-    if (at + ESCAPE + used + ESCAPE + 1 > LINE_CAPACITY) return;
+    /* Something was left out: say so rather than let the line look complete. */
+    if (dropped) add_segment(suffix, &used, room, "", RED, "+");
+    if (!used) return;
 
     memcpy(line + at, COLOUR_ORANGE, ESCAPE * sizeof(wchar_t));
     at += ESCAPE;
-    for (int i = 0; i < used; i++) line[at + i] = (wchar_t)(unsigned char)suffix[i];
+    for (size_t i = 0; i < used; i++) line[at + i] = (wchar_t)(unsigned char)suffix[i];
     at += used;
     memcpy(line + at, COLOUR_RESTORE, ESCAPE * sizeof(wchar_t));
     line[at + ESCAPE] = 0;
