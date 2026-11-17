@@ -132,9 +132,23 @@ dropped. "+21-30% Enhanced Defense" therefore reads "21-30 Enhanced Defense".
 
 ## Where the block goes, and what it cannot disturb
 
-Ahead of the host filter's own rules. A rule without `%CONTINUE%` ends processing for that item
-and the mainstream filters have plenty — their "filter off" rule is one — so a block appended at
-the end would never run. Every generated rule carries `%CONTINUE%`, so the host filter still does
+**After the host filter's first thousand rules, for a reason never found.** The end of the file
+is dead for a reason that is in the engine's own code: a matching rule without `%CONTINUE%` ends
+the description chain for that item, and a mainstream filter carries over a thousand of them, so
+a block appended last never runs. The top is dead for no reason anyone could name. The same rules
+that work in a filter of their own produce nothing when they sit first in a 6000-rule host, while
+identical copies placed further in work.
+
+Measured by putting one probe rule at seven depths of a real filter at once: the copies at rules
+1001, 2001, 3001, 4001 and 5001 all printed; the copies at rule 1 and at the end did not. The
+parser drops nothing — it appends every line to an ordered list, with no cap — nothing in the
+skipped range replaces the description, and the description has no length limit worth the name:
+383 bytes of it rendered fine. So the offset is a fact, not an explanation.
+
+A filter too small to have an opening section takes the block at the top, where a small filter
+does work.
+
+Every generated rule carries `%CONTINUE%`, so the host filter still does
 everything it did before; measured on the real file, its 6368 lines come back byte for byte when
 the block is removed.
 

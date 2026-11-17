@@ -19,7 +19,8 @@ inside its archive, the other generates rules into the loot filter:
 | Feature | What it does |
 |---|---|
 | Item colours | Draws a unique item in another of the game's own 21 colours, by the column PD2's table already uses for it — [docs](docs/item-colours.md) |
-| Affix labels | Puts each affix's name and the range it rolls in into the item's own tooltip, on magic, rare and crafted alike — [docs](docs/affix-labels.md) |
+| Affix ranges | Writes which affix gave a line of an item's tooltip, and what it could have rolled, at the end of that line — including a crafted item's recipe, identified by fingerprint — [docs](docs/affix-ranges.md) |
+| Affix labels | The same answer as a block of loot-filter rules, for playing without the plugin. Superseded by the above, which can reach the stat line itself — [docs](docs/affix-labels.md) |
 
 ## Why one repository, and one DLL
 

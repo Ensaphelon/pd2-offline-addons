@@ -198,6 +198,16 @@ def test_the_block_goes_ahead_of_the_host_s_rules(install) -> None:
     assert ours < theirs
 
 
+def test_a_big_host_filter_takes_the_block_past_its_opening_rules(tmp_path) -> None:
+    """Measured in the game: in a 6000-rule filter, rules placed first produce nothing, while
+    the same rules after the first thousand work. See affix_labels._insertion_point."""
+    lines = [f"ItemDisplay[rule{n}]: %NAME%%CONTINUE%" for n in range(3000)]
+    assert affix_labels._insertion_point(lines) == affix_labels._SKIP_OPENING_RULES
+    # A filter too small to have an opening section keeps the block at the top, which does work.
+    assert affix_labels._insertion_point(lines[:6]) == 0
+    assert affix_labels._insertion_point(["// nothing but a comment"]) == 1
+
+
 def test_every_rule_carries_continue_so_the_host_filter_still_runs(install) -> None:
     install_dir, loot, archive = install
     affix_labels.enable(loot, install_dir, archive)

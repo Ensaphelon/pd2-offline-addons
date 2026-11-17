@@ -35,6 +35,11 @@ void dps_tick(void);
  * put the file. */
 void records_init(void *module);
 
+/* Affix ranges on the item's own stat lines. Reads its table beside the DLL at startup, then
+ * waits for BH.dll — PD2 loads the maphack after us — before patching its one call site. */
+void affixes_init(void *module);
+BOOL affixes_hook_install(void);
+
 /* The development probes that mapped the game's memory and its sound table. They are driven by
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
  * plugin that answers a skill key by playing a sound and dumping memory is not something to ship
@@ -75,6 +80,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     menu_install();
     beam_init(module);
     records_init(module);
+    affixes_init(module);
     beam_reload();
 #if ADDONS_DEV
     probe_init(module);
@@ -82,6 +88,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
     DWORD last_reload = GetTickCount();
     BOOL frame_hooked = FALSE;
+    BOOL affixes_hooked = FALSE;
 
     for (;;) {
         menu_watch();
@@ -89,6 +96,9 @@ static DWORD WINAPI bootstrap(LPVOID module)
         /* D2Gfx and the Glide wrapper both load after us, so the beam's frame hook goes in once
          * they are there rather than at startup. */
         if (!frame_hooked) frame_hooked = frame_hook_install();
+
+        /* BH.dll is Project Diablo 2's maphack and lands after us too. */
+        if (!affixes_hooked) affixes_hooked = affixes_hook_install();
 
         /* beam.txt is re-read while the game runs, so the light can be tuned by editing a line
          * and looking at the screen rather than by rebuilding and restarting. */

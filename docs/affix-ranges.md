@@ -1,0 +1,117 @@
+# Affix ranges
+
+Which affix gave a line of an item's tooltip, and what it could have rolled — written at the end
+of that line, beside the range the maphack already prints there.
+
+```
++87% Enhanced Defense [10 - 200]  Blessed [51 - 65]%, Brilliant craft [25 - 50]%
+18% Increased Chance of Blocking  Brilliant craft [10 - 20]%
+Lightning Resist +48% [6 - 70]  Ocher [11 - 20]%, Chromatic [21 - 30]%, Brilliant craft [5 - 10]%
+Repairs 1 durability in 33 seconds  of Self-Repair
+```
+
+Nothing to turn on: `install` puts the table beside the plugin, and the plugin reads it.
+
+## Why it is not a loot filter
+
+It began as one, and the filter version works — `affixes` still installs it, and it is the only
+option without the plugin. But a filter can only ever produce a block above the item's stats: it
+supplies a name and one description, and nothing in the language addresses a stat line. The third
+line above is the other half of the reason. A stat fed by three sources can only be explained
+where the stat is.
+
+The filter version also runs into the engine: rules placed first in a large host filter produce
+nothing, for a reason never found. See [affix-labels.md](affix-labels.md).
+
+## Where the hook goes
+
+The ` [10 - 200]` is BH.dll's, not the game's — `always_show_stat_ranges` is one of its settings,
+and the eight format strings behind it live in its `.rdata`. They are referenced from one
+function, which BH **exports**: `_BHOnPropertyBuild@16`. Project Diablo 2 builds a property's
+line, hands it over and gets the range appended.
+
+The decorated name gives the convention away — `@16` is four stdcall arguments — and BH's own
+internal call settles what they are:
+
+```
+10099c83  push 0x0                  ; arg4
+10099c85  push [ebp-0x114]          ; arg3  UnitAny*  (the item)
+10099c8b  lea  eax,[ebp-0x104]
+10099c91  push edi                  ; arg2  the stat id
+10099c92  push eax                  ; arg1  the line, a 130-wchar stack buffer
+10099c93  call _BHOnPropertyBuild
+```
+
+Patching **that call site** was the first attempt and it was wrong: it is `_BHOnDamagePropertyBuild`
+calling into the general path, so it only ever fires for damage lines, and the detour never ran
+once. Nothing imports BH either — PD2 resolves the address itself — so there is no import slot to
+swap. What works is a detour on the exported function's own prologue, six bytes of which land on
+an instruction boundary. The function is found by name through `GetProcAddress`, so a BH rebuild
+that moves it is still found; its prologue is compared before anything is written, so a rebuild
+that *changes* it costs a line in the log and the feature, not the game.
+
+## The two numbering systems that are not the obvious ones
+
+**An affix id on the item is not its row in `MagicPrefix.txt`.** The game keeps one numbering for
+both kinds: a suffix is its own row, a prefix is its row plus the length of the suffix table less
+one. A crafted Light Plate whose rows are prefixes 147, 327, 390 and suffix 402 carries 1190,
+1370, 1433 and 402. Derived from the table rather than written down, so a season that adds
+suffixes moves it.
+
+**An item's `dwTxtFileNo` counts one table, skipping the rows that have no code.** Weapons, then
+armour, then the rest; each of the three carries one `Expansion` separator, and the game does not
+number it. Counting them put a Light Plate one place out — 341 against the 340 the game reports.
+
+Both were settled against a real item rather than assumed, and both are covered by tests.
+
+## Naming the craft
+
+A crafted item carries more than its affixes: the recipe adds mods of its own, and they are why
+the numbers do not add up from the affixes alone. On the item above, 35 resistance is Chromatic's
+21-30 plus the craft's 5-10, and 87% defence is Blessed plus the craft's 25-50.
+
+**Nothing on the item says which recipe made it.** The cube applies the mods and they become
+ordinary stats, indistinguishable from any others. So the recipe is identified from what the item
+could have been made from and what it carries:
+
+1. The item's number narrows `CubeMain`'s recipes to the ones whose input type covers it — seven,
+   one per family. Without this the field is every recipe in the game, and a Brilliant *helm*'s
+   faster hit recovery gets proposed for a breastplate.
+2. Each is scored by how many of its fixed mods the item has. On a real crafted Light Plate that
+   is Brilliant with five of six against one for the runner-up.
+3. A winner needs two mods and a clear margin. A tie is not an answer, and the plugin prints
+   nothing rather than choose.
+
+Not all mods can be looked for: `item_armor_percent` is drawn on the tooltip but is not in the
+item's stat list at all, which is why this is a score and not a complete match. The stats live in
+the **second** list — `StatList+0x48`, the one BH itself walks. `+0x24` holds the base item's
+three: defence and the two durabilities.
+
+## What it deliberately does not do
+
+**Split a value between sources.** The item stores one merged total per stat. On the lightning
+line above there is no way to say which of the 48 came from Ocher, which from Chromatic and which
+from the craft — naming all three and their ranges is the whole of what the data supports.
+
+**Print a range an affix does not roll.** `rep-dur` takes a fixed rate from its parameter, so
+`of Self-Repair` is printed with no range rather than an invented one.
+
+## Colour
+
+The text is orange and ends by restoring blue. Both are needed: a colour holds until something
+changes it, and these lines are drawn one after another into the same tooltip, so an unclosed
+orange runs on through every stat line below it. The restore is `ÿc3`, which is what BH restores
+to after its own range.
+
+A per cent sign comes from `ItemStatCost`'s `descfunc`, not from the game string: the table holds
+"Enhanced Defense" and the game draws "+87% Enhanced Defense".
+
+## The table
+
+`affixes.txt`, beside the DLL, written by `install` and regenerated whenever it runs. Four kinds
+of row: `p` and `s` are affixes found by the id on the item, `c` is a craft recipe's fixed mods
+and `t` says which items that recipe reaches.
+
+Everything that needs the game's tables is worked out in Python, where they are already parsed
+and under test, and handed over as flat text. The plugin reads rows; it does not read tables.
+Without the file it leaves the game's stat lines exactly as they were.

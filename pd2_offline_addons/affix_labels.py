@@ -65,8 +65,8 @@ from . import mpq_asset
 
 LOOT_FILTER_NAME = "loot.filter"
 
-BEGIN = "// >>> pd2-offline-addons: affix labels >>>"
-END = "// <<< pd2-offline-addons: affix labels <<<"
+BEGIN = "// >>> pd2-offline-addons affix labels >>>"
+END = "// <<< pd2-offline-addons affix labels <<<"
 BACKUP_SUFFIX = ".pd2addons-backup"
 
 EXCEL = "data\\global\\excel\\"
@@ -100,6 +100,8 @@ _PRINTF = re.compile(r"%[-0-9.]*[dsiu]|%%")
 _FIRST_RULE = re.compile(r"^\s*ItemDisplay\s*\[", re.IGNORECASE)
 # Keep a tooltip line readable; D2 does not wrap one, it runs off.
 _LINE_BUDGET = 104
+# How many of the host filter's own rules the block sits behind; see _insertion_point.
+_SKIP_OPENING_RULES = 1000
 
 
 class AffixLabelError(Exception):
@@ -227,26 +229,61 @@ def property_stats(archive: Path) -> dict[str, tuple[str, ...]]:
     return out
 
 
+def _wording(code: str, phrases: dict[str, tuple[str, int]],
+             prop_stats: dict[str, tuple[str, ...]]) -> tuple[str, int] | None:
+    """The game's wording for a property, as one phrase however many stats it writes.
+
+    `res-all` writes four: fire, lightning, cold and poison resistance, all from the same roll.
+    Taking the first would label it "Fire Resist" and hide three quarters of what the affix does,
+    so the wordings are folded on what they have in common -- "All Resist" -- which is both
+    shorter and true. Where they have nothing in common they are simply joined.
+    """
+    found: list[tuple[str, int]] = []
+    for stat in prop_stats.get(code, ()):
+        phrase = phrases.get(stat)
+        if phrase and phrase not in found:
+            found.append(phrase)
+    if not found:
+        return None
+    if len(found) == 1:
+        return found[0]
+    common: list[str] = []
+    for tail in zip(*(phrase.split()[::-1] for phrase, _ in found)):
+        if len(set(tail)) != 1:
+            break
+        common.append(tail[0])
+    place = found[0][1]
+    if common:
+        return ("All " + " ".join(reversed(common)), place)
+    return (" / ".join(phrase for phrase, _ in found), place)
+
+
 def _mod_text(code: str, low: str, high: str, phrases: dict[str, tuple[str, int]],
               prop_stats: dict[str, tuple[str, ...]]) -> str:
     """One mod, as the game would word it, with the range where the number goes."""
-    span = low if low == high else f"{low}-{high}"
-    for stat in prop_stats.get(code, ()):
-        found = phrases.get(stat)
-        if not found:
-            continue
+    low, high = low.strip(), high.strip()
+    # Some mods carry no roll at all -- `rep-dur` takes a fixed rate out of `param` -- and
+    # printing an empty range for them leaves a dangling label.
+    span = "" if not (low or high) else (low if low == high else f"{low}-{high}")
+    found = _wording(code, phrases, prop_stats)
+    if found:
         phrase, place = found
         if "#" in phrase:
             return phrase.replace("#", span, 1).strip()
-        if place == 2:
+        if place == 2 or not span:
             return f"{phrase} {span}".strip()
         if place == 0:
             # The phrase is the whole mod ("Ignore Target's Defense"); a range would be noise,
             # unless the affix really does roll one.
             return phrase if low == high else f"{phrase} ({span})"
         return f"{span} {phrase}".strip()
-    # No wording in the tables: the raw property code still identifies it unambiguously.
-    return f"{code} {span}"
+    # No wording in the tables. The stat's own name still says what it does, and reads better
+    # than the property code; only properties that name no stat at all fall back to the code.
+    stats = prop_stats.get(code, ())
+    if stats:
+        name = re.sub(r"^(?:item|passive)_", "", stats[0]).replace("_", " ")
+        return f"{name} {span}".strip()
+    return f"{code} {span}".strip()
 
 
 def affix_lines(install_dir: Path, archive: Path) -> list[tuple[str, int, str, str]]:
@@ -380,13 +417,38 @@ def status(filter_path: Path) -> LabelStatus:
     )
 
 
-def enable(filter_path: Path, install_dir: Path, archive: Path) -> LabelStatus:
-    """Puts the block in (replacing one already there), backing the filter up first.
+def _insertion_point(lines: list[str]) -> int:
+    """Where in the host filter the block actually takes effect.
 
-    It goes AHEAD of the host filter's own rules. A rule without `%CONTINUE%` ends processing for
-    that item and the mainstream filters have plenty -- their "filter off" rule is one -- so a
-    block appended at the end would simply never run.
+    Not the top, and not the end -- both were measured in the game and both are dead.
+
+    The end is dead for a reason that is in the engine's own code: a matching rule without
+    `%CONTINUE%` ends the description chain for that item, and a mainstream filter carries over a
+    thousand of them, so a block appended last never runs.
+
+    The top is dead for a reason I have not found. The same rules that work in a filter of their
+    own produce nothing when they sit first in a 6000-rule host, while identical copies placed
+    after the host's first thousand rules work. Measured by putting one probe rule at seven
+    depths of a real filter at once: the copies at rules 1001, 2001, 3001, 4001 and 5001 all
+    printed, the copies at rule 1 and at the end did not. The parser drops nothing (it appends
+    every line to an ordered list, with no cap), nothing in the skipped range replaces the
+    description, and the description itself has no length limit worth the name -- 383 bytes of it
+    rendered fine. So this offset is an empirical fact, not an explanation.
     """
+    rules = [i for i, line in enumerate(lines) if _FIRST_RULE.match(line)]
+    if not rules:
+        return len(lines)
+    # Far enough in to clear whatever swallows a big host filter's opening rules, and still far
+    # ahead of the chain-stoppers that cluster near the end. Only a big filter gets moved: in a
+    # small one the block works at the top, which is where it belongs, and skipping a thousand
+    # rules it does not have would push it past the end.
+    if len(rules) < 2 * _SKIP_OPENING_RULES:
+        return rules[0]
+    return rules[_SKIP_OPENING_RULES]
+
+
+def enable(filter_path: Path, install_dir: Path, archive: Path) -> LabelStatus:
+    """Puts the block in (replacing one already there), backing the filter up first."""
     if not filter_path.is_file():
         raise AffixLabelError(f"no filter at {filter_path}")
     if not archive.is_file():
@@ -399,7 +461,7 @@ def enable(filter_path: Path, install_dir: Path, archive: Path) -> LabelStatus:
 
     block = generate(install_dir, archive)
     lines = host.splitlines()
-    at = next((i for i, line in enumerate(lines) if _FIRST_RULE.match(line)), len(lines))
+    at = _insertion_point(lines)
     rebuilt = lines[:at] + block.splitlines() + lines[at:]
 
     backup = filter_path.with_name(filter_path.name + BACKUP_SUFFIX)

@@ -28,7 +28,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import d2gl_patcher, mpq_asset
+from . import affix_ranges, d2gl_patcher, mpq_asset
 
 PLUGIN_DLL_NAME = "pd2addons.dll"
 # Any exported symbol will do — an import entry has to bind to something. The DLL does its work
@@ -339,6 +339,7 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
         if plugin_dll.resolve() != destination.resolve():
             shutil.copy2(plugin_dll, destination)
         _install_label(game_exe.parent)
+        _install_affix_table(game_exe.parent)
         return current
 
     backup = game_exe.with_suffix(game_exe.suffix + BACKUP_SUFFIX)
@@ -374,6 +375,7 @@ def enable(game_exe: Path, plugin_dll: Path) -> PatchStatus:
         shutil.copy2(plugin_dll, destination)
     game_exe.write_bytes(bytes(out.data))
     _install_label(game_exe.parent)
+    _install_affix_table(game_exe.parent)
     return status(game_exe)
 
 
@@ -405,6 +407,23 @@ def _install_label(install_dir: Path) -> bool:
         return False
     _teach_d2gl(install_dir)
     marker.write_text(LABEL_CELL_FILE)
+    return True
+
+
+def _install_affix_table(install_dir: Path) -> bool:
+    """Writes the affix-range table the plugin reads beside the DLL.
+
+    Reports rather than raises, like the label step: without the table the plugin simply leaves
+    the game's stat lines alone, which is a feature missing, not a game broken.
+    """
+    archive = install_dir / "pd2data.mpq"
+    if not archive.is_file():
+        return False
+    try:
+        affix_ranges.write_table(archive, install_dir)
+    except (OSError, ValueError, KeyError):
+        (install_dir / affix_ranges.TABLE_NAME).unlink(missing_ok=True)
+        return False
     return True
 
 
