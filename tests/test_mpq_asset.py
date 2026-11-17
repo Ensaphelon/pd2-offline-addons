@@ -9,6 +9,7 @@ particular install being present, and the layout is the one thing being exercise
 from __future__ import annotations
 
 import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,65 @@ def test_the_backup_is_taken_once_so_a_second_add_cannot_overwrite_it(archive: P
     mpq_asset.add(archive, NAME, b"second")
     assert archive.with_name(archive.name + mpq_asset.BACKUP_SUFFIX).read_bytes() == original
     assert mpq_asset.read(archive, NAME) == b"second"
+
+
+def test_the_pkware_decoder_matches_the_published_vector() -> None:
+    """zlib's blast.c ships one test vector, and this is it. The algorithm is not one to take on
+    trust from a reading of the format: a wrong table or a reversed bit order decodes the first few
+    symbols correctly and then quietly produces plausible rubbish."""
+    assert mpq_asset._explode(b"\x00\x04\x82\x24\x25\x8f\x80\x7f", 13) == b"AIAIAIAIAIAIA"
+
+
+def _add_compressed(archive: Path, name: str, payload: bytes) -> None:
+    """Put a file in the way PD2's own archives hold theirs: split into sectors, each one deflated
+    and tagged with its method, behind a table of offsets. `add` only ever writes files stored, so
+    the shape `read` has to cope with for PD2's tables has to be built here by hand.
+
+    The payload must actually compress — a sector that did not get smaller is stored verbatim with
+    no method byte, which is a different case and not the one under test.
+    """
+    sector = 512 << 3  # the sector shift every D2-era archive uses
+    packed = [b"\x02" + zlib.compress(payload[at : at + sector], 9)
+              for at in range(0, len(payload), sector)]
+    offsets = [4 * (len(packed) + 1)]
+    for blob in packed:
+        offsets.append(offsets[-1] + len(blob))
+    body = struct.pack(f"<{len(offsets)}I", *offsets) + b"".join(packed)
+    assert all(len(blob) < sector for blob in packed), "fixture payload did not compress"
+
+    mpq_asset.add(archive, name, body)  # places the bytes and takes the hash slot
+    raw = bytearray(archive.read_bytes())
+    mpq = mpq_asset._Archive(bytes(raw))
+    index = mpq.index_of(name)
+    mpq.block_table[index] = [mpq.block_table[index][0], len(body), len(payload),
+                              mpq_asset._FLAG_EXISTS | mpq_asset._FLAG_COMPRESS]
+    blocks = b"".join(struct.pack("<IIII", *entry) for entry in mpq.block_table)
+    raw[mpq.block_pos :] = mpq_asset._crypt(
+        blocks, mpq_asset._hash("(block table)", mpq_asset._HASH_FILE_KEY), encrypt=True)
+    archive.write_bytes(bytes(raw))
+
+
+def test_one_of_the_games_own_compressed_files_reads_back_whole(archive: Path) -> None:
+    # Several sectors' worth, because the offset table in front of them is the part that has to be
+    # read correctly — a one-sector file would pass with the table ignored.
+    payload = (b"Toothrow\tbwht\twhit\t" * 900)[:20000]
+    _add_compressed(archive, OTHER, payload)
+    assert mpq_asset.read(archive, OTHER) == payload
+
+
+def test_an_encrypted_file_is_refused_rather_than_half_read(archive: Path) -> None:
+    mpq_asset.add(archive, OTHER, b"whatever")
+    raw = bytearray(archive.read_bytes())
+    mpq = mpq_asset._Archive(bytes(raw))
+    index = mpq.index_of(OTHER)
+    mpq.block_table[index][3] |= mpq_asset._FLAG_ENCRYPTED
+    blocks = b"".join(struct.pack("<IIII", *entry) for entry in mpq.block_table)
+    raw[mpq.block_pos :] = mpq_asset._crypt(
+        blocks, mpq_asset._hash("(block table)", mpq_asset._HASH_FILE_KEY), encrypt=True)
+    archive.write_bytes(bytes(raw))
+
+    with pytest.raises(mpq_asset.MpqError, match="encrypted"):
+        mpq_asset.read(archive, OTHER)
 
 
 def test_a_file_that_is_not_an_archive_is_refused(tmp_path: Path) -> None:

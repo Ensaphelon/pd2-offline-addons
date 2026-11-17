@@ -1,4 +1,4 @@
-"""Putting one extra file into a Diablo II MPQ archive, and taking it back out again.
+"""Reading a file out of a Diablo II MPQ archive, putting one in, and taking it back out again.
 
 Why this exists. The Quick Restart line in the ESC menu is drawn from a pre-rendered graphic, not
 from text: a menu entry names a cell file ("Options", "Exit", "ReturnToGame") and the game loads
@@ -14,6 +14,12 @@ the archive: existing file data keeps its exact offsets, and the hash table keep
 occupied slot. The new file's bytes go where the hash table used to start, and the two tables are
 written after it. Rollback is a file copy, same as Game.exe's.
 
+What it reads. Replacing one of PD2's own files means first getting the original out, and the
+archives keep their files split into sectors and compressed — so `read` decompresses as well. Two
+methods cover every file in a D2-era archive: zlib, which the standard library has, and PKWARE
+DCL "implode", which it does not and which is implemented below. Encrypted files are refused;
+nothing here needs one.
+
 The format handled here is the classic MPQ v1 layout every D2-era archive uses — [file data]
 [hash table][block table], both tables encrypted with Blizzard's published algorithm. Anything else
 is refused rather than guessed at.
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import shutil
 import struct
+import zlib
 from pathlib import Path
 
 BACKUP_SUFFIX = ".pd2addons-backup"
@@ -38,6 +45,15 @@ _SLOT_DELETED = 0xFFFFFFFE
 # its bytes are simply there — which is the oldest and most widely supported shape there is, and
 # the right choice against a Storm.dll from 2000 that predates flags like SINGLE_UNIT.
 _FLAG_EXISTS = 0x80000000
+
+# Shapes PD2's own files come in, which only `read` has to understand.
+_FLAG_IMPLODE = 0x00000100      # every sector is PKWARE DCL, with no method byte in front
+_FLAG_COMPRESS = 0x00000200     # every sector names its own method in its first byte
+_FLAG_ENCRYPTED = 0x00010000
+_FLAG_SINGLE_UNIT = 0x01000000  # one sector however big the file is, so no offset table
+
+_COMPRESSION_ZLIB = 0x02
+_COMPRESSION_PKWARE = 0x08
 
 _HEADER_FORMAT = "<4sIIHHIIII"
 
@@ -87,6 +103,135 @@ def _crypt(data: bytes, key: int, *, encrypt: bool) -> bytes:
         key = ((((~key & 0xFFFFFFFF) << 0x15) + 0x11111111) | (key >> 0x0B)) & 0xFFFFFFFF
         seed = (plain + seed + (seed << 5) + 3) & 0xFFFFFFFF
     return struct.pack(f"<{count}I", *out) + data[count * 4 :]
+
+
+# --- PKWARE DCL "implode", undone ------------------------------------------------------------
+#
+# The compression the D2 data archives reach for most, and the one Python has no module for. This
+# is a port of zlib's own blast.c (Mark Adler), which is the canonical decoder; the same port is
+# already in pd2-holy-inventory's reader, where it was validated against blast's published
+# "AIAIAIAIAIAIA" vector and then against every table the app reads.
+#
+# The one subtlety, and the reason a from-scratch attempt got it wrong: the Huffman codes are read
+# a bit at a time, INVERTED, and compared against the first canonical code of each length. Reading
+# the bits in the obvious order decodes the first few symbols and then diverges.
+
+_MAXBITS = 13
+_LEN_BASE = [3, 2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 24, 40, 72, 136, 264]
+_LEN_EXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+# Run-length-encoded code lengths, transcribed from blast.c: low nibble is the bit length, high
+# nibble is one less than how many symbols in a row have it.
+_LEN_LENGTHS = [2, 35, 36, 53, 38, 23]
+_DIST_LENGTHS = [2, 20, 53, 230, 247, 151, 248]
+
+
+class _Huffman:
+    """blast.c's construct(): a count of codes per bit length, and the symbols sorted by it."""
+
+    def __init__(self, encoded: list[int]) -> None:
+        lengths: list[int] = []
+        for packed in encoded:
+            lengths += [packed & 15] * ((packed >> 4) + 1)
+        self.count = [0] * (_MAXBITS + 1)
+        for length in lengths:
+            self.count[length] += 1
+        offsets = [0, 0]
+        for length in range(1, _MAXBITS):
+            offsets.append(offsets[length] + self.count[length])
+        self.symbol = [0] * len(lengths)
+        for symbol, length in enumerate(lengths):
+            if length:
+                self.symbol[offsets[length]] = symbol
+                offsets[length] += 1
+
+    def decode(self, bits: "_BitStream") -> int:
+        code = first = index = 0
+        for length in range(1, _MAXBITS + 1):
+            code |= bits.read_bit() ^ 1
+            count = self.count[length]
+            if code < first + count:
+                return self.symbol[index + (code - first)]
+            index += count
+            first = (first + count) << 1
+            code <<= 1
+        raise MpqError("ran out of bits decoding a PKWARE symbol")
+
+
+class _BitStream:
+    """Least significant bit first, which is how DCL writes them."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.position = 0
+        self.buffer = 0
+        self.available = 0
+
+    def read_bit(self) -> int:
+        if self.available == 0:
+            if self.position >= len(self.data):
+                raise MpqError("PKWARE stream ended early")
+            self.buffer = self.data[self.position]
+            self.position += 1
+            self.available = 8
+        bit = self.buffer & 1
+        self.buffer >>= 1
+        self.available -= 1
+        return bit
+
+    def read_bits(self, count: int) -> int:
+        value = 0
+        for index in range(count):
+            value |= self.read_bit() << index
+        return value
+
+
+_LENGTH_CODES = _Huffman(_LEN_LENGTHS)
+_DISTANCE_CODES = _Huffman(_DIST_LENGTHS)
+
+
+def _explode(data: bytes, size: int) -> bytes:
+    bits = _BitStream(data)
+    literals_are_coded = bits.read_bits(8)
+    dictionary_bits = bits.read_bits(8)
+    if literals_are_coded:
+        # The ASCII-coded literal mode, with its own 256-symbol table. No file in any D2 archive
+        # uses it, so the table is not carried here — refusing is better than a half-decode.
+        raise MpqError("PKWARE ASCII literal mode is not supported")
+    if dictionary_bits not in (4, 5, 6):
+        raise MpqError(f"bad PKWARE dictionary size {dictionary_bits}")
+
+    out = bytearray()
+    while len(out) < size:
+        if bits.read_bit():
+            symbol = _LENGTH_CODES.decode(bits)
+            length = _LEN_BASE[symbol] + bits.read_bits(_LEN_EXTRA[symbol])
+            if length == 519:  # the end-of-stream length, which cannot occur otherwise
+                break
+            far = _DISTANCE_CODES.decode(bits)
+            low = 2 if length == 2 else dictionary_bits
+            distance = (far << low) + bits.read_bits(low) + 1
+            if distance > len(out):
+                raise MpqError("PKWARE match points before the start of the output")
+            for _ in range(length):
+                out.append(out[-distance])
+        else:
+            out.append(bits.read_bits(8))
+    return bytes(out[:size])
+
+
+def _decompress_sector(chunk: bytes, size: int, flags: int) -> bytes:
+    # A sector that did not get smaller is kept verbatim, whatever the file's flags say — the
+    # writer's own escape hatch, and every reader has to honour it.
+    if len(chunk) >= size:
+        return chunk[:size]
+    if flags & _FLAG_IMPLODE:
+        return _explode(chunk, size)
+    method, payload = chunk[0], chunk[1:]
+    if method == _COMPRESSION_ZLIB:
+        return zlib.decompress(payload)
+    if method == _COMPRESSION_PKWARE:
+        return _explode(payload, size)
+    raise MpqError(f"compression method {method:#04x} is not supported")
 
 
 class _Archive:
@@ -146,16 +291,38 @@ def contains(archive: Path, name: str) -> bool:
 
 
 def read(archive: Path, name: str) -> bytes | None:
-    """Reads back a file added by `add` — stored, unencrypted, no sector table. Not a general MPQ
-    reader: it exists so an install can be verified against the archive it just wrote."""
+    """One file's contents, decompressed. None if the archive does not have it.
+
+    This serves two callers with one piece of code: verifying what `add` just wrote (a stored
+    file, which takes the first branch untouched), and getting one of PD2's own files out so it
+    can be edited and put back.
+    """
     mpq = _Archive(archive.read_bytes())
     index = mpq.index_of(name)
     if index is None:
         return None
     position, compressed_size, size, flags = mpq.block_table[index]
-    if flags & ~_FLAG_EXISTS:
-        raise MpqError(f"{name} is not a plainly stored file (flags {flags:#x})")
-    return mpq.raw[position : position + min(compressed_size, size)]
+    if flags & _FLAG_ENCRYPTED:
+        raise MpqError(f"{name} is encrypted, which nothing here needs to read")
+    blob = mpq.raw[position : position + compressed_size]
+
+    if not flags & (_FLAG_IMPLODE | _FLAG_COMPRESS):
+        return blob[:size]
+    if flags & _FLAG_SINGLE_UNIT:
+        return _decompress_sector(blob, size, flags)
+
+    sector = 512 << mpq.sector_shift
+    count = (size + sector - 1) // sector
+    # The offsets are relative to the file's own start, and there is one more of them than there
+    # are sectors — the last marks the end.
+    offsets = struct.unpack_from(f"<{count + 1}I", blob, 0)
+    out = bytearray()
+    for index in range(count):
+        chunk = blob[offsets[index] : offsets[index + 1]]
+        out += _decompress_sector(chunk, min(sector, size - len(out)), flags)
+    if len(out) != size:
+        raise MpqError(f"{name} decompressed to {len(out)} bytes, not the {size} claimed")
+    return bytes(out)
 
 
 def add(archive: Path, name: str, payload: bytes) -> None:

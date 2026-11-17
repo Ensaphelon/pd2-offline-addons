@@ -13,6 +13,13 @@ expensive to rediscover:
 | Holy Grail beam | `pd2-holy-grail-tracker` | A shaft of light over a drop that would be new to the collection |
 | Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server, and writes each area's best down for `pd2-holy-inventory` |
 
+One add-on is not in the DLL at all, because it does not need to be — see
+[docs/item-colours.md](docs/item-colours.md):
+
+| Feature | What it does |
+|---|---|
+| Item colours | Draws a unique item in another of the game's own 21 colours, by the column PD2's table already uses for it |
+
 ## Why one repository, and one DLL
 
 Three reasons, in ascending order of how much they force the issue.
@@ -40,7 +47,8 @@ So: one patch, one backup, one DLL, one menu.
 ```
 beam.txt        the beam's default config — read from beside the DLL, re-read while the game runs
 src/            one DLL: main.c drives menu/restart, the beam, and the DPS meter
-pd2_offline_addons/   the installer — one patcher, one backup, one import entry
+pd2_offline_addons/   the installer — one patcher, one backup, one import entry, and the MPQ
+                reader/writer the label and the item colours both go through
 assets/         the ESC-menu label graphics, and the generator that sets them from D2's own font
 docs/           each feature's own write-up, including the disassembly the offsets rest on
 tools-beam/     the DCC->DC6 pipeline that produced the beam's artwork
@@ -64,6 +72,15 @@ The game is a 32-bit process, so the target is i686 and that is not negotiable.
 python3 -m pd2_offline_addons status    --game "<path to>/ProjectD2/Game.exe"
 python3 -m pd2_offline_addons install   --game "<path to>/ProjectD2/Game.exe"
 python3 -m pd2_offline_addons uninstall --game "<path to>/ProjectD2/Game.exe"
+```
+
+Item colours are their own pair, because a colour is a matter of taste and should not arrive with
+an install nobody asked it of. `--colour` is repeatable and omitting it means this project's own
+choices; `uncolour` puts the data archive back.
+
+```sh
+python3 -m pd2_offline_addons recolour --game "…" --colour Toothrow=dgry
+python3 -m pd2_offline_addons uncolour --game "…"
 ```
 
 `./build.sh` comes first and is not optional: `pd2addons.dll` is ignored by git rather than
