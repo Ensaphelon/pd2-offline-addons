@@ -131,6 +131,25 @@ applied through `Properties.txt` generically, taking the stat number from the ta
 from an instruction, so a write would never appear as a literal 360 in the code. The ranges were
 in `CubeMain` the whole time, in 995 rows that each set `corrupt N-N` alongside the mod.
 
+## It does not agree with the range already on the line, and should not
+
+The maphack's own `[6 - 70]` and this addon's numbers measure different things, and on a crafted
+item they visibly disagree. Worth writing down, because the disagreement looks like a bug.
+
+**Ours** is what each source the item actually carries could have rolled. On a real crafted Light
+Plate the lightning line is Ocher's 11-20, Chromatic's 21-30 and the craft's 5-10 -- 37 to 60
+between them, and the item has 48.
+
+**The maphack's** is what the item could have had from the same kinds of source, over the whole
+tier ladder. `res-all` spans 3-30 across its tiers, which is exactly what it prints on the other
+three resistances, where nothing else feeds them. Lightning has a second ladder on that item --
+Ocher's group, whose top tier on a body armour is Amber 31-40 -- so 3+3 and 30+40 make the 6 and
+the 70.
+
+**And it only knows affixes.** It has no table of craft recipes or corruptions, which is visible
+on the same tooltip: `Poison Resist +35% [3 - 30]`, a value outside the range printed beside it,
+because the craft's 5-10 was never in its sum. That gap is the reason this addon exists.
+
 ## What it deliberately does not do
 
 **Split a value between sources.** The item stores one merged total per stat. On the lightning
