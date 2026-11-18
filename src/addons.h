@@ -19,4 +19,11 @@
 #define ADDONS_DEV 0
 #endif
 
+/* A sampler of every thread while a game is being left, for finding where the exit stalls. Its
+   own switch rather than ADDONS_DEV: the dev probes hook hundreds of call sites per frame, and a
+   timing question cannot be answered by a build that changes the timing. */
+#ifndef ADDONS_HANGPROBE
+#define ADDONS_HANGPROBE 0
+#endif
+
 #endif

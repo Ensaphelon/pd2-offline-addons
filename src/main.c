@@ -46,6 +46,14 @@ void affixes_reload(void);
  * store panel every tick. */
 void vendor_tick(void);
 
+/* Storm's background reader without Fog's 256 KB/s brake: a game left in its first seconds no
+ * longer waits for sounds that were still trickling in. */
+void storm_io_tick(void);
+
+#if ADDONS_HANGPROBE
+void hangprobe_tick(void);
+#endif
+
 /* The development probes that mapped the game's memory and its sound table. They are driven by
  * F1..F12, which in a real game are the skill hotkeys, so they stay out of a normal build: a
  * plugin that answers a skill key by playing a sound and dumping memory is not something to ship
@@ -119,6 +127,10 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
         dps_tick();
         vendor_tick();
+        storm_io_tick();
+#if ADDONS_HANGPROBE
+        hangprobe_tick();
+#endif
 
 #if ADDONS_DEV
         static BOOL was_down[12];
