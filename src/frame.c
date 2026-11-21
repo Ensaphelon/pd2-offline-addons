@@ -140,6 +140,7 @@ static DWORD frames;
 static DWORD last_report;
 
 void frame_tick(void);   /* what we actually want to do each frame; see probe.c */
+void automap_frame(void);   /* opens the automap on joining; needs the game's own thread */
 void calls_report(DWORD frames);
 void calls_draw_test_box(void);
 BOOL calls_watch_install(void);
@@ -163,6 +164,7 @@ static void __stdcall our_swap(int interval)
      * game server's hot path on every frame is not something to ship. */
     frame_tick();
 #endif
+    automap_frame();
     if (original_swap) original_swap(interval);
 }
 
