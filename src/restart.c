@@ -112,21 +112,33 @@ static DWORD WINAPI restart_thread(LPVOID difficulty_arg)
 
     BYTE difficulty = (BYTE)(DWORD_PTR)difficulty_arg;
 
-    /* Main menu. Single Player is the top entry — pressing by list order landed on Battle.net. */
+    /* Leaving a game used to land on the main menu; with charselect.c it lands on the character
+       screen itself, unless Shift was held on the way out. So the main menu is a step taken only
+       when it is the screen that came up — recognised by its Single Player button's own handler,
+       not by guessing which button is topmost, which on the character screen would be something
+       else entirely. */
     if (!wait_for_screen(20000)) {
-        log_line("restart: the main menu never settled — stopping, you are in the menu");
+        log_line("restart: no screen settled after leaving — stopping, you are in the menu");
         restart_running = 0;
         return 0;
     }
-    describe_controls("main-menu");
-    if (!press_button(PICK_TOPMOST, 0, STATE_ENABLED, "Single Player")) { restart_running = 0; return 0; }
+    d2_control *single_player = NULL;
+    for (d2_control *c = *D2WIN_VAR(d2_control *, OFF_D2WIN_FIRSTCONTROL); c; c = c->next)
+        if (c->type == 6 && c->state == STATE_ENABLED && d2.d2launch
+            && (BYTE *)c->on_press == (BYTE *)d2.d2launch + OFF_D2LAUNCH_SINGLE_PLAYER)
+            single_player = c;
+    if (single_player) {
+        describe_controls("main-menu");
+        log_line("restart: pressing Single Player");
+        single_player->on_press(single_player);
+        if (!wait_for_screen(20000)) {
+            log_line("restart: the character screen never settled — stopping");
+            restart_running = 0;
+            return 0;
+        }
+    }
 
     /* Character select: OK sits bottom-right, Cancel bottom-left. */
-    if (!wait_for_screen(20000)) {
-        log_line("restart: the character screen never settled — stopping");
-        restart_running = 0;
-        return 0;
-    }
     describe_controls("char-select");
     if (!press_button(PICK_BOTTOM_RIGHT, 0, STATE_ENABLED, "OK on the character")) { restart_running = 0; return 0; }
 

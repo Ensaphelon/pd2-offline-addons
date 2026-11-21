@@ -26,6 +26,8 @@ void menu_watch(void);
 void beam_init(void *module);
 void beam_reload(void);
 BOOL frame_hook_install(void);
+void charselect_install(void);
+BOOL charselect_late(void);
 
 /* The offline DPS meter — resolves its own hooks, retries until PD2's module is loaded. */
 void dps_tick(void);
@@ -85,6 +87,11 @@ static DWORD WINAPI bootstrap(LPVOID module)
      * build this was not mapped against, or a game that has not finished loading, must stop here
      * rather than read whatever happens to be at the offset. */
     if (!d2_version_is_supported()) return 0;
+
+    /* D2Launch has to be patched before its startup runs, and PD2 loads it some way Game.exe's
+       LoadLibraryA hook does not see — so look for it every couple of milliseconds until it is
+       there. See charselect.c. */
+    for (int waited = 0; waited < 3000 && !charselect_late(); waited += 2) Sleep(2);
     if (!d2_wait_for_modules(60000)) {
         log_line("D2's modules never turned up — nothing to attach to");
         return 0;
@@ -156,6 +163,9 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(module);
         log_init(module);
+        /* Here rather than in bootstrap: it has to be in before Game.exe loads D2Launch, and
+           Game.exe's own code has not started while the loader is still running this. */
+        charselect_install();
         HANDLE thread = CreateThread(NULL, 0, bootstrap, module, 0, NULL);
         if (thread) CloseHandle(thread);
     }

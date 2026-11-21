@@ -13,6 +13,7 @@ expensive to rediscover:
 | Holy Grail beam | `pd2-holy-grail-tracker` | A shaft of light over a drop that would be new to the collection |
 | Offline DPS meter | `pd2-dps-meter-offline` | Makes PD2's own DPS counter work without a realm server, and writes each area's best down for `pd2-holy-inventory` |
 | Quick exit | — | Leaving a game in its first seconds no longer stalls on sounds still loading: Storm's background reader runs without Fog's 256 KB/s brake — [docs](docs/exit-stall.md) |
+| Straight to characters | — | The character screen where the main menu used to be — at launch with `-skiptobnet` (no title screen, no Battle.net logon) and on leaving a game — by pointing D2Launch's two calls at Single Player's own handler. Hold Shift to get the old behaviour — [docs](docs/charselect.md) |
 | Automap on join | — | The automap — PD2's corner mini map — open from the first frame of every game, by the game's own toggle, so its arrow-key panning works too — [docs](docs/automap.md) |
 | Vendor restock | — | PD2's gamble-window refresh button and hotkey on an ordinary vendor's trade window too, restocking it the way the game's own four-minute timer does — [docs](docs/vendor-restock.md) |
 

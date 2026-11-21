@@ -169,9 +169,9 @@ static void __stdcall our_swap(int interval)
 }
 
 /* Replaces one named import in `module`'s import table, and hands back where it was found so it
-   can be put back. */
-static void **redirect_import(HMODULE module, const char *dll, const char *symbol, void *with,
-                              void **out_original)
+   can be put back. Shared with charselect.c, which redirects Game.exe's LoadLibraryA. */
+void **redirect_import(HMODULE module, const char *dll, const char *symbol, void *with,
+                       void **out_original)
 {
     BYTE *base = (BYTE *)module;
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;

@@ -117,6 +117,13 @@
 
 #define OFF_D2WIN_FIRSTCONTROL      0x214A0   /* BH.    head of the out-of-game UI control list */
 
+/* --- D2Launch.dll ---------------------------------------------------------------------------- */
+
+/* found. The main menu's Single Player button handler, int __stdcall(control *): named by the
+   menu's own control table under string 5106 "SINGLE PLAYER". A live button whose on_press is
+   this IS that button — see charselect.c, and restart.c, which looks for it by this. */
+#define OFF_D2LAUNCH_SINGLE_PLAYER  0x1B030
+
 /* --- Structures the addresses above point at -------------------------------------------------
  * Layouts are D2's own, as published by D2Ex2 (CommonStructs.h). Only the fields this plugin
  * actually reads or writes are named; the rest is padding kept at the right size so an entry
