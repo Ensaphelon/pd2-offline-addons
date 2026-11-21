@@ -23,13 +23,18 @@ a verdict.
 | `SUSPECT` | The same, but within 5 s of a serious exception that never reached a crash handler. Something swallowed it and quit. |
 | `D2 HALT` | D2 stopped itself: either `ExitProcess` was called from Fog, or the next launch found a `Halt` in `D2YYMMDD.txt`. Fog's report has the details. |
 | `CRASH` | An exception nothing caught. `pd2addons.log` gets the registers and the stack, and `crashes\pd2-<date>_<time>.dmp` gets a minidump (the newest 10 are kept). It is then handed on to Fog as before. |
-| `NO TRACE` | Written at the next launch. The previous session logged neither an exit nor a crash, so it was killed from outside or died too hard to run any code. |
+| `KILLED` | Written by `pd2watch.exe` the moment the game ends, when nothing inside it saw the end. It carries the process's exit code. |
+| `NO TRACE` | Written at the next launch. The previous session logged neither an exit nor a crash, and no watcher wrote for it either. |
 
 `pd2addons.log` of the previous session survives one launch as `pd2addons.prev.log`. That file is
 what the `NO TRACE` check reads, and what to read after a bad ending.
 
-Serious exceptions are also logged first-chance in `pd2addons.log`, at most 20 per session. Some
-of them are caught and harmless. The last one before a bad ending is the one to look at.
+Serious exceptions are also logged first-chance in `pd2addons.log`, at most 20 per session. C++
+exceptions are logged too, with their type and the code that threw them, up to another 20. Some of
+them are caught and harmless. The last one before a bad ending is the one to look at.
+
+`pd2addons.alive` is rewritten every two seconds. A `NO TRACE` line quotes it, so a session that
+vanished still says roughly when it died.
 
 ## How
 
@@ -39,13 +44,43 @@ of them are caught and harmless. The last one before a bad ending is the one to 
     prologue. So the exit hook sits on `ntdll!RtlExitUserProcess`, which every exit goes through,
     and takes the caller from kernel32's frame above it.
   - `TerminateProcess` is hooked at kernel32's own export, which does have the prologue.
-  - Both patches compare the bytes first. A function that does not match is left alone, and the
-    log says `NOT hooked`. The session's end is then seen only at DLL detach, without a caller.
+  - **The wider net.** It was added after a close on 2026-11-21 that none of the above saw: no
+    exit, no exception, and nothing from Windows. The close came while shift+right-clicking a
+    crafted map from the cube into the inventory.
+    - `kernelbase!TerminateProcess` is what modern code reaches through api-set imports, skipping
+      kernel32. It is hooked by its hot-patch prologue, and so is `RaiseFailFastException`.
+    - `ntdll!NtTerminateProcess` is where every user-mode way out ends. It opens with a five-byte
+      `mov eax, <syscall number>`. A jump replaces that instruction, and a trampoline does the
+      `mov` and jumps back.
+    - A `NULL` process handle there means "every thread but this one", which only a process on its
+      way out asks for.
+  - Every patch compares the bytes first. A function that does not match is left alone, and the
+    log says `NOT hooked`. If none of the exit hooks took, the session's end is seen only at DLL
+    detach, without a caller.
+  - Not seen in-process: a `__fastfail` (the `int 0x29` instruction goes straight to the
+    kernel), a stack overflow with no room left to report it, and a kill from another process.
+    The same day showed that Windows does not reliably write these down either. A test
+    `int 0x29` left no WER report and no Application Error.
+- **The exit code, from outside.** `pd2watch.exe` beside the DLL (`tools/pd2watch.c`) waits for
+  the game to end and reads its exit code. Three codes tell the endings above apart:
+  `0xC0000409` for a fail-fast, `0xC00000FD` for a stack overflow, and `1` for a `taskkill /F`.
+  - Game.exe denies every other process access to itself, so the watcher could not open it. The
+    DLL duplicates its own process handle instead (from the pseudo-handle, which needs no
+    permission). That handle is the only one the watcher inherits
+    (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+  - If the game's own log has no `exit:` or `crash:` line for the session, the watcher writes a
+    `KILLED` line with the code to the exits file. It also writes an `exit:` line to the log, so
+    the next launch does not add `NO TRACE` as well.
 - **Crashes.** The top-level filter slot is held by re-taking it once a second, because Fog
   claims it during startup. Fog's filter is called after ours.
   - The slow work (formatting, the stack scan, the dump) runs on a thread of its own. A thread
     that overflowed its stack has no room for it.
-- **First-chance exceptions.** A vectored handler notes every exception with a `0xC…` code.
+- **First-chance exceptions.** A vectored handler notes every exception with a `0xC…` code, and
+  every MSVC C++ throw (`0xE06D7363`). For a throw it reads the type from the throw metadata,
+  checking each pointer with `VirtualQuery`. The thrower comes from the stack, since the exception
+  address is always inside `RaiseException`.
+  - A stack overflow is written down by a watchdog thread that the handler wakes. The thread that
+    overflowed has no room left to do it.
 
 Tested on a stand-in executable for each ending:
 
@@ -53,4 +88,11 @@ Tested on a stand-in executable for each ending:
 - a null write, which produced a dump;
 - an access violation swallowed by a later handler and then `ExitProcess(1)`, which produced
   `SUSPECT`;
-- a `taskkill /F`, which produced `NO TRACE` at the next start.
+- a `taskkill /F`, which produced `NO TRACE` at the next start;
+- direct calls to `kernelbase!TerminateProcess(5)`, `ntdll!NtTerminateProcess(9)` and
+  `RaiseFailFastException`, each with the caller named;
+- a stand-in C++ throw, logged with its type and the throwing call;
+- endless recursion, which gave the watchdog's overflow line, a `CRASH` line and a dump;
+- with the watcher running: a clean exit, which it left alone; a `taskkill /F`, which it wrote
+  down as `KILLED` with exit code `0x00000001`; and a real `int 0x29`, which it wrote down as
+  `KILLED` with `0xC0000409`.

@@ -7,3 +7,6 @@ ${CC:-i686-w64-mingw32-gcc} -shared -o pd2addons.dll src/*.c \
   -Os -std=c99 -Wall -Wextra -static-libgcc \
   -Wl,--enable-stdcall-fixup -lversion
 echo "built pd2addons.dll"
+# The exit-code watcher pd2addons.dll starts beside itself — see tools/pd2watch.c.
+${CC:-i686-w64-mingw32-gcc} -o pd2watch.exe tools/pd2watch.c -Os -std=c99 -Wall -Wextra -static-libgcc -mwindows
+echo "built pd2watch.exe"

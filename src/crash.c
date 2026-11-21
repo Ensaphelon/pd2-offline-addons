@@ -1,3 +1,4 @@
+#define _WIN32_WINNT 0x0601   /* the inherited-handle list for pd2watch.exe */
 #include <windows.h>
 #include <dbghelp.h>
 #include <stdio.h>
@@ -35,7 +36,17 @@
  * is torn down. kernel32!ExitProcess itself has no such prologue on Windows 11 (it opens with
  * push ebp / mov ebp,esp), so the hook sits one call further in, on ntdll!RtlExitUserProcess,
  * which every exit goes through, and takes the caller from kernel32's frame above it.
- * TerminateProcess is hooked at kernel32's own export, which does have the prologue. Unhandled exceptions are taken by holding the top-level
+ * TerminateProcess is hooked at kernel32's own export, which does have the prologue.
+ *
+ * WIDER NET (2026-11-21, after a close that none of the above saw: no exit, no exception, nothing
+ * from Windows). Every way out of a process from user mode ends in ntdll!NtTerminateProcess, so
+ * that is hooked too: its first instruction is a five-byte `mov eax, <syscall number>`, which a
+ * jump replaces and a two-instruction trampoline carries out. kernelbase!TerminateProcess (what
+ * modern code reaches through api-set imports, skipping kernel32) and RaiseFailFastException are
+ * hooked by their hot-patch prologues. C++ exceptions are logged first-chance with their type,
+ * a stack overflow is written down by a watchdog thread (the overflowing one has no stack left to
+ * do it), and pd2addons.alive is rewritten every two seconds so a session that vanishes still says
+ * roughly when. Unhandled exceptions are taken by holding the top-level
  * filter slot — Fog claims it during startup, so the slot is re-taken every second and Fog's filter
  * is called after ours. A vectored handler notes every serious exception first-chance. */
 
@@ -51,10 +62,19 @@ typedef BOOL (WINAPI *minidump_fn)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
                                    PMINIDUMP_CALLBACK_INFORMATION);
 typedef VOID (NTAPI *exit_process_fn)(LONG);
 typedef BOOL (WINAPI *terminate_process_fn)(HANDLE, UINT);
+typedef LONG (NTAPI *nt_terminate_fn)(HANDLE, LONG);
+typedef VOID (WINAPI *fail_fast_fn)(PEXCEPTION_RECORD, PCONTEXT, DWORD);
 
 static minidump_fn write_minidump;
 static exit_process_fn real_exit_process;
 static terminate_process_fn real_terminate_process;
+static terminate_process_fn real_base_terminate_process;
+static nt_terminate_fn real_nt_terminate;
+static fail_fast_fn real_fail_fast;
+static HANDLE overflow_event;
+static volatile LONG cpp_lines;
+#define CPP_LINES 20
+#define ALIVE_FILE "pd2addons.alive"
 static LPTOP_LEVEL_EXCEPTION_FILTER chained;
 
 static volatile LONG in_crash;
@@ -307,6 +327,85 @@ static BOOL WINAPI on_terminate_process(HANDLE process, UINT code)
     return real_terminate_process(process, code);
 }
 
+/* Walks out of ntdll/kernel32/kernelbase through their EBP frames, so the caller named is whoever
+   asked to end the process rather than the plumbing it went through. */
+static BOOL is_plumbing(HMODULE m);
+static void *outer_caller(void *caller, void **frame)
+{
+    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+    for (int hops = 0; hops < 4 && is_plumbing(module_of(caller)); hops++) {
+        void **up = (void **)frame[0];
+        if (up <= frame || (void *)(up + 2) > tib->StackBase) break;
+        frame = up;
+        caller = frame[1];
+    }
+    return caller;
+}
+
+static BOOL is_self(HANDLE process)
+{
+    return process == GetCurrentProcess() || GetProcessId(process) == GetCurrentProcessId();
+}
+
+__attribute__((noinline, optimize("no-omit-frame-pointer")))
+static BOOL WINAPI on_base_terminate_process(HANDLE process, UINT code)
+{
+    if (is_self(process))
+        note_ending("TerminateProcess (kernelbase)", code,
+                    outer_caller(__builtin_return_address(0), (void **)__builtin_frame_address(0)),
+                    (const DWORD *)&process);
+    return real_base_terminate_process(process, code);
+}
+
+/* NULL is "every thread but this one", which only a process on its way out asks for. */
+__attribute__((noinline, optimize("no-omit-frame-pointer")))
+static LONG NTAPI on_nt_terminate(HANDLE process, LONG status)
+{
+    if (!process || is_self(process))
+        note_ending("NtTerminateProcess", (UINT)status,
+                    outer_caller(__builtin_return_address(0), (void **)__builtin_frame_address(0)),
+                    (const DWORD *)&process);
+    return real_nt_terminate(process, status);
+}
+
+__attribute__((noinline, optimize("no-omit-frame-pointer")))
+static VOID WINAPI on_fail_fast(PEXCEPTION_RECORD record, PCONTEXT context, DWORD flags)
+{
+    if (record) {
+        char what[320];
+        describe_record(record, what, sizeof what);
+        log_line("exit: fail-fast requested for %s", what);
+    }
+    note_ending("RaiseFailFastException", record ? (UINT)record->ExceptionCode : 0,
+                outer_caller(__builtin_return_address(0), (void **)__builtin_frame_address(0)),
+                (const DWORD *)&record);
+    real_fail_fast(record, context, flags);
+}
+
+/* A five-byte `mov eax, imm32` at the function's start (every WoW64 ntdll syscall stub opens so):
+   the jump to the hook takes its place, and the trampoline does the mov and jumps back past it. */
+static void *hook_mov_eax(BYTE *fn, void *hook)
+{
+    if (!fn || fn[0] != 0xB8) return NULL;
+    BYTE *tramp = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return NULL;
+    memcpy(tramp, fn, 5);
+    tramp[5] = 0xE9;
+    LONG back = (LONG)((fn + 5) - (tramp + 10));
+    memcpy(tramp + 6, &back, 4);
+    FlushInstructionCache(GetCurrentProcess(), tramp, 16);
+
+    DWORD was;
+    if (!VirtualProtect(fn, 5, PAGE_EXECUTE_READWRITE, &was)) return NULL;
+    BYTE patch[5] = { 0xE9 };
+    LONG rel = (LONG)((BYTE *)hook - (fn + 5));
+    memcpy(patch + 1, &rel, 4);
+    memcpy(fn, patch, 5);
+    VirtualProtect(fn, 5, was, &was);
+    FlushInstructionCache(GetCurrentProcess(), fn, 5);
+    return tramp;
+}
+
 /* kernel32 hands most of its exports to kernelbase through a `jmp [import]` stub; the function
    with the hot-patch prologue is at the far end of it. */
 static BYTE *resolve_export(const char *module, const char *name)
@@ -460,9 +559,73 @@ static LONG WINAPI on_unhandled(EXCEPTION_POINTERS *ep)
     return next ? next(ep) : EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Readable memory, asked of the memory manager rather than found out by faulting. */
+static BOOL readable(const void *p, size_t n)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!p || !VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return FALSE;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return FALSE;
+    return (const BYTE *)p + n <= (const BYTE *)mbi.BaseAddress + mbi.RegionSize;
+}
+
+/* MSVC's throw: [0] magic 0x19930520, [1] the object, [2] its ThrowInfo. The type's decorated
+   name sits behind ThrowInfo -> CatchableTypeArray -> CatchableType -> TypeDescriptor. */
+static void note_cpp_exception(const EXCEPTION_RECORD *r, const CONTEXT *c)
+{
+    if (cpp_lines >= CPP_LINES) return;
+    LONG n = InterlockedIncrement(&cpp_lines);
+    if (n > CPP_LINES) return;
+    const char *type = "?";
+    if (r->NumberParameters >= 3 && r->ExceptionInformation[0] == 0x19930520) {
+        const DWORD *info = (const DWORD *)r->ExceptionInformation[2];
+        if (readable(info, 16)) {
+            const DWORD *array = (const DWORD *)(DWORD_PTR)info[3];
+            if (readable(array, 8) && array[0] > 0) {
+                const DWORD *catchable = (const DWORD *)(DWORD_PTR)array[1];
+                if (readable(catchable, 8)) {
+                    const char *descriptor = (const char *)(DWORD_PTR)catchable[1];
+                    if (readable(descriptor, 9)) type = descriptor + 8;
+                }
+            }
+        }
+    }
+    /* The throw itself is always inside RaiseException; who threw is further up the stack. */
+    char trail[400];
+    size_t used = 0;
+    int found = 0;
+    trail[0] = 0;
+    const DWORD *sp = (const DWORD *)(DWORD_PTR)c->Esp;
+    const void *base = ((NT_TIB *)NtCurrentTeb())->StackBase;
+    for (const DWORD *q = sp; found < 5 && (const void *)(q + 1) <= base && q < sp + 512; q++) {
+        HMODULE m = module_of((const void *)(DWORD_PTR)*q);
+        if (!m || (DWORD_PTR)*q - (DWORD_PTR)m < 0x1000 || is_plumbing(m)) continue;
+        char at[160];
+        describe_address((const void *)(DWORD_PTR)*q, at, sizeof at);
+        int k = _snprintf(trail + used, sizeof trail - used, " %s", at);
+        if (k < 0 || (size_t)k >= sizeof trail - used) break;
+        used += (size_t)k;
+        found++;
+    }
+    log_line("exception, first chance: C++ throw of %.80s, thread %lu, from:%s%s", type,
+             GetCurrentThreadId(), found ? trail : " ?",
+             n == CPP_LINES ? " -- the last such line this session" : "");
+}
+
+/* The overflowing thread cannot write anything down; this one can, while the process lasts. */
+static DWORD WINAPI overflow_watch(LPVOID unused)
+{
+    (void)unused;
+    WaitForSingleObject(overflow_event, INFINITE);
+    char where[160];
+    describe_address(fatal_address, where, sizeof where);
+    log_line("exception, first chance: STACK OVERFLOW at %s", where);
+    return 0;
+}
+
 static LONG WINAPI on_first_chance(EXCEPTION_POINTERS *ep)
 {
     const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+    if (r->ExceptionCode == 0xE06D7363) { note_cpp_exception(r, ep->ContextRecord); return EXCEPTION_CONTINUE_SEARCH; }
     if ((r->ExceptionCode & 0xF0000000) != 0xC0000000) return EXCEPTION_CONTINUE_SEARCH;
 
     fatal_code = r->ExceptionCode;
@@ -475,7 +638,10 @@ static LONG WINAPI on_first_chance(EXCEPTION_POINTERS *ep)
 
     /* An overflowing thread has no room for a log line. The unhandled filter, which does its
        work on another thread, is where an overflow gets written down. */
-    if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) return EXCEPTION_CONTINUE_SEARCH;
+    if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        if (overflow_event) SetEvent(overflow_event);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     if (r->ExceptionAddress != last_logged_address && first_chance_lines < FIRST_CHANCE_LINES) {
         last_logged_address = r->ExceptionAddress;
@@ -558,14 +724,23 @@ static void review_previous(void)
     day.wDay = (WORD)atoi(date + 8);
     find_d2_halt(since, &day, halt, sizeof halt);
 
+    char alive[16] = "";
+    _snprintf(path, MAX_PATH, "%s" ALIVE_FILE, log_dir());
+    path[MAX_PATH - 1] = 0;
+    FILE *af = fopen(path, "r");
+    if (af) {
+        if (fgets(alive, sizeof alive, af)) alive[strcspn(alive, "\r\n")] = 0;
+        fclose(af);
+    }
+
     char text[1500];
     if (halt[0])
         _snprintf(text, sizeof text, "%s -> %.8s  %-8s  %s", since, last, "D2 HALT", halt);
     else
         _snprintf(text, sizeof text,
-                  "%s -> %.8s  %-8s  neither an exit nor a crash reached the addon: killed from "
-                  "outside, or died too hard to run any code. Last line logged: %s",
-                  since, last, "NO TRACE", last + 14);
+                  "%s -> %s  %-8s  neither an exit nor a crash reached the addon: killed from "
+                  "outside, or died too hard to run any code. Alive at %s; last line logged: %s",
+                  since, alive[0] ? alive : "?", "NO TRACE", alive[0] ? alive : "?", last + 14);
     text[sizeof text - 1] = '\0';
     append_exit_line(text);
     log_line("crashwatch: the previous session ended without an exit — written to " EXITS_FILE);
@@ -582,12 +757,55 @@ void crash_init(void)
                                                   (void *)on_exit_process);
     real_terminate_process = (terminate_process_fn)hotpatch(
         resolve_export("kernel32.dll", "TerminateProcess"), (void *)on_terminate_process);
+    real_base_terminate_process = (terminate_process_fn)hotpatch(
+        resolve_export("kernelbase.dll", "TerminateProcess"), (void *)on_base_terminate_process);
+    real_nt_terminate = (nt_terminate_fn)hook_mov_eax(
+        resolve_export("ntdll.dll", "NtTerminateProcess"), (void *)on_nt_terminate);
+    real_fail_fast = (fail_fast_fn)hotpatch(
+        resolve_export("kernelbase.dll", "RaiseFailFastException"), (void *)on_fail_fast);
 }
 
 /* Re-takes the unhandled-exception slot; whatever held it is called after us. Once a second
    from bootstrap, because Fog claims the slot during startup, after we have loaded. */
 void crash_tick(void)
 {
+    /* The heartbeat: when a session vanishes, the next launch can say roughly when. */
+    static DWORD last_alive;
+    DWORD now_tick = GetTickCount();
+    if (now_tick - last_alive >= 2000) {
+        last_alive = now_tick;
+        char path[MAX_PATH], stamp[16];
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        _snprintf(path, MAX_PATH, "%s" ALIVE_FILE, log_dir());
+        path[MAX_PATH - 1] = 0;
+        int n = _snprintf(stamp, sizeof stamp, "%02d:%02d:%02d", t.wHour, t.wMinute, t.wSecond);
+        HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD written;
+            WriteFile(h, stamp, (DWORD)n, &written, NULL);
+            CloseHandle(h);
+        }
+    }
+
+    /* The game runs with SEM_NOGPFAULTERRORBOX, and with it Windows writes nothing at all for a
+       fail-fast: no Application Error, no WER report, no dump (2026-11-21: a game closed with
+       0xC0000409 and left nothing; a test program did the same until the flag was cleared, then
+       got an event naming the faulting module and a dump in %LOCALAPPDATA%\CrashDumps). The flag
+       is only about Windows' own reporting — Fog still takes an ordinary crash before Windows
+       sees it — so it is cleared, every second, in case the game sets it again. */
+    UINT mode = GetErrorMode();
+    if (mode & SEM_NOGPFAULTERRORBOX) {
+        SetErrorMode(mode & ~SEM_NOGPFAULTERRORBOX);
+        static int said;
+        if (!said) {
+            said = 1;
+            log_line("crashwatch: error mode was 0x%X; Windows may now report a fail-fast "
+                     "(Application Error, and a dump in CrashDumps)", mode);
+        }
+    }
+
     LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(on_unhandled);
     if (previous == on_unhandled) return;
     chained = previous;
@@ -597,15 +815,80 @@ void crash_tick(void)
              previous ? who : "Windows (nothing else was watching)");
 }
 
+/* The watcher outside the process: tools/pd2watch.c, beside the DLL. Some endings run no code in
+   here at all (three on 2026-11-21: nothing hooked, nothing logged by Windows), and the exit code
+   is the one thing that still tells them apart. Game.exe denies every other process access to
+   itself, so the watcher could not open it; it is handed this process's own handle instead —
+   duplicated from the pseudo-handle, which needs no permission — as the only handle it inherits. */
+static void start_watcher(void)
+{
+    char exe[MAX_PATH], cmd[MAX_PATH + 64];
+    _snprintf(exe, MAX_PATH, "%spd2watch.exe", log_dir());
+    exe[MAX_PATH - 1] = '\0';
+    if (GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES) {
+        log_line("crashwatch: no pd2watch.exe beside the DLL, so no exit code from outside");
+        return;
+    }
+    HANDLE self = NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &self,
+                         SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, TRUE, 0)) {
+        log_line("crashwatch: could not duplicate the process handle (error %lu)", GetLastError());
+        return;
+    }
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+    LPPROC_THREAD_ATTRIBUTE_LIST list = HeapAlloc(GetProcessHeap(), 0, size);
+    BOOL listed = list && InitializeProcThreadAttributeList(list, 1, 0, &size);
+    STARTUPINFOEXA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    memset(&pi, 0, sizeof pi);
+    si.StartupInfo.cb = sizeof si;
+    BOOL started = FALSE;
+    DWORD error = 0;
+    if (listed && UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &self,
+                                            sizeof self, NULL, NULL)) {
+        si.lpAttributeList = list;
+        _snprintf(cmd, sizeof cmd, "\"%s\" %lu %lu", exe, (unsigned long)(DWORD_PTR)self,
+                  (unsigned long)GetCurrentProcessId());
+        cmd[sizeof cmd - 1] = '\0';
+        started = CreateProcessA(exe, cmd, NULL, NULL, TRUE,
+                                 EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, NULL, NULL,
+                                 &si.StartupInfo, &pi);
+    }
+    error = GetLastError();
+    if (listed) DeleteProcThreadAttributeList(list);
+    if (list) HeapFree(GetProcessHeap(), 0, list);
+    CloseHandle(self);
+    if (!started) {
+        log_line("crashwatch: could not start pd2watch.exe (error %lu)", error);
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    log_line("crashwatch: pd2watch.exe (pid %lu) will read the exit code from outside",
+             (unsigned long)pi.dwProcessId);
+}
+
 /* From bootstrap, before anything else. */
 void crash_start(void)
 {
-    log_line("crashwatch: ExitProcess %s, TerminateProcess %s",
-             real_exit_process ? "hooked" : "NOT hooked (prologue not as expected)",
-             real_terminate_process ? "hooked" : "NOT hooked (prologue not as expected)");
+    log_line("crashwatch: ExitProcess %s, TerminateProcess %s, kernelbase TerminateProcess %s, "
+             "NtTerminateProcess %s, RaiseFailFastException %s",
+             real_exit_process ? "hooked" : "NOT hooked",
+             real_terminate_process ? "hooked" : "NOT hooked",
+             real_base_terminate_process ? "hooked" : "NOT hooked",
+             real_nt_terminate ? "hooked" : "NOT hooked",
+             real_fail_fast ? "hooked" : "NOT hooked");
+    overflow_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (overflow_event) {
+        HANDLE watch = CreateThread(NULL, 0, overflow_watch, NULL, 0, NULL);
+        if (watch) CloseHandle(watch);
+    }
     HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
     if (dbghelp) write_minidump = (minidump_fn)GetProcAddress(dbghelp, "MiniDumpWriteDump");
     review_previous();
+    start_watcher();
     crash_tick();
 }
 
