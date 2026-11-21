@@ -8,4 +8,10 @@
 void log_init(void *module);
 void log_line(const char *fmt, ...);
 
+#include <windows.h>
+/* The DLL's folder, with its trailing backslash ("" before log_init has run). */
+const char *log_dir(void);
+/* When log_init ran — the start of this game session. */
+const SYSTEMTIME *log_session_start(void);
+
 #endif

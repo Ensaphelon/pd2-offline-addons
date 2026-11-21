@@ -79,9 +79,16 @@ void server_delta(void);
  * two are cheap enough that running them at the same rate costs nothing worth measuring. */
 #define TICK_MS 15
 
+/* How each session ended, and the crashes on the way: see crash.c. */
+void crash_init(void);
+void crash_start(void);
+void crash_tick(void);
+void crash_process_detach(void);
+
 static DWORD WINAPI bootstrap(LPVOID module)
 {
     log_line("pd2-offline-addons attached");
+    crash_start();
 
     /* Version and modules first. Everything below reads addresses inside D2's own DLLs, so a
      * build this was not mapped against, or a game that has not finished loading, must stop here
@@ -130,6 +137,8 @@ static DWORD WINAPI bootstrap(LPVOID module)
             /* Same tick: affix-ranges.cfg decides whether the ranges show always or only while
              * a key is held, and that is worth being able to change without restarting. */
             affixes_reload();
+            /* Fog takes the unhandled-exception slot during startup; take it back. */
+            crash_tick();
         }
 
         dps_tick();
@@ -159,10 +168,14 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved)
 {
-    (void)reserved;
+    if (reason == DLL_PROCESS_DETACH && reserved) {
+        /* The process is ending (not an unload). Normally the ExitProcess hook already said so. */
+        crash_process_detach();
+    }
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(module);
         log_init(module);
+        crash_init();
         /* Here rather than in bootstrap: it has to be in before Game.exe loads D2Launch, and
            Game.exe's own code has not started while the loader is still running this. */
         charselect_install();
