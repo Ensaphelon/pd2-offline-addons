@@ -53,7 +53,7 @@ internal call settles what they are:
 10099c85  push [ebp-0x114]          ; arg3  UnitAny*  (the item)
 10099c8b  lea  eax,[ebp-0x104]
 10099c91  push edi                  ; arg2  the stat id
-10099c92  push eax                  ; arg1  the line, a 130-wchar stack buffer
+10099c92  push eax                  ; arg1  the line, a 128-wchar stack buffer
 10099c93  call _BHOnPropertyBuild
 ```
 
@@ -221,7 +221,10 @@ escapes, which the first attempt got wrong and encoded as the two UTF-8 bytes of
 
 ### Fitting
 
-The line is a 130-wchar buffer, and three escapes cost nine characters of it. A stat fed by three
+The line is a 128-wchar buffer, and three escapes cost nine characters of it. It was taken for
+130 until 2026-11-21. BH is built with /GS, though, and `[ebp-4]`, right below the saved frame
+pointer, holds its security cookie. A long line with ranges appended wrote over the cookie, and
+BH ended the game with a fail-fast (exit code `0xC0000409`, no crash report) on returning. A stat fed by three
 affixes, a craft and a corruption overruns it -- which would have lost the whole annotation on
 exactly the busiest lines, the ones worth reading.
 

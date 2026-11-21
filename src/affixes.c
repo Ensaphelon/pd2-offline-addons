@@ -25,7 +25,7 @@
  *     10099c85  push [ebp-0x114]          ; arg3  UnitAny*  (the item)
  *     10099c8b  lea  eax,[ebp-0x104]
  *     10099c91  push edi                  ; arg2  the stat id
- *     10099c92  push eax                  ; arg1  the line, a 130-wchar stack buffer
+ *     10099c92  push eax                  ; arg1  the line, a 128-wchar stack buffer
  *     10099c93  call _BHOnPropertyBuild
  *
  * and its own prologue agrees: [ebp+8] is walked as a wide string, [ebp+0xC] is compared against
@@ -153,10 +153,18 @@ static const BYTE PROLOGUE_EXPECTED[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xC0 };
 typedef void(__stdcall *append_range_fn)(wchar_t *line, int stat_id, void *item, int flag);
 static append_range_fn original;
 
-/* The longest line BH builds here lands in a 130-wchar stack buffer (`lea eax,[ebp-0x104]`), and
-   that buffer is this detour's first argument. Writing past it would be writing over BH's own
-   frame, so nothing is appended that does not fit with room for the terminator. */
-#define LINE_CAPACITY 130
+/* The longest line BH builds here lands in a stack buffer at [ebp-0x104], and that buffer is this
+   detour's first argument. It is 128 wchars, not the 130 the offset suggests: BH is built with
+   /GS, and the four bytes below the saved frame pointer ([ebp-4]) are its security cookie
+   (BH.dll+0x998F0: `mov eax,[__security_cookie]; xor eax,ebp; mov [ebp-4],eax`, checked by
+   `__security_check_cookie` on the way out).
+
+   This was 130 until 2026-11-21. A long enough line with ranges appended (shift held — a
+   shift+right-click on an item does exactly that) wrote its last two characters over the
+   cookie, and BH's function then ended the game with a fail-fast, 0xC0000409, on returning:
+   no exception, no handler, no crash report, nothing in any log. pd2watch.exe's exit code is
+   what named it; the earlier silent closes that day fit the same pattern. */
+#define LINE_CAPACITY 128
 
 /* D2's own colour escape: 0xFF, 'c', then the colour.
  *
@@ -705,7 +713,7 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
     correct_range(line, affixes, craft_lo + corr_lo, craft_hi + corr_hi);
 
     /* Built as segments that are fitted one at a time rather than assembled and then accepted
-       or rejected whole. The line is a 130-wchar buffer and the colour escapes cost three
+       or rejected whole. The line is a 128-wchar buffer and the colour escapes cost three
        characters each, so a stat fed by three affixes, a craft and a corruption overruns it --
        and losing the lot on exactly the busiest lines is the worst of both worlds. What does not
        fit is marked instead. */
