@@ -159,12 +159,31 @@ static append_range_fn original;
    (BH.dll+0x998F0: `mov eax,[__security_cookie]; xor eax,ebp; mov [ebp-4],eax`, checked by
    `__security_check_cookie` on the way out).
 
-   This was 130 until 2026-11-21. A long enough line with ranges appended (shift held — a
-   shift+right-click on an item does exactly that) wrote its last two characters over the
-   cookie, and BH's function then ended the game with a fail-fast, 0xC0000409, on returning:
-   no exception, no handler, no crash report, nothing in any log. pd2watch.exe's exit code is
-   what named it; the earlier silent closes that day fit the same pattern. */
+   This was 130 until 2026-11-21. A line filled to that limit (ranges are appended while shift
+   is held) would write its last two characters over the cookie, and BH would end the game with
+   a fail-fast, 0xC0000409, on returning. It was found while chasing silent closes with exactly
+   that exit code — which went on after this fix, so they had another cause as well (see
+   docs/crash-watch.md). */
 #define LINE_CAPACITY 128
+
+/* The whole tooltip has a limit too. PD2 gathers a map's modifier block (every stat line, newline
+   by newline) into one 1024-wchar stack buffer — ProjectDiablo.dll+0x2B4870, [ebp-0x808], with
+   its /GS cookie at [ebp-4] — and never checks what the lines have grown to after BH and this
+   file appended to them. A map loaded with modifiers (ears add more) went to 1123 wchars, 306 of
+   them ours: the cookie was overwritten and PD2 ended the game with a fail-fast, 0xC0000409, the
+   moment Shift was pressed on it (2026-11-21, read out of the crash dump's stack; without our
+   segments the block was 817).
+
+   So one tooltip gets one budget: every line this hook sees for the same item in the same frame
+   is counted, and nothing more is appended once the block would pass TOOLTIP_BUDGET. The slack
+   below 1024 covers the few lines that do not come through here (a map's Corrupted / Heroic /
+   Treacherous tags). */
+#define TOOLTIP_BUDGET 864
+extern volatile LONG frame_serial;
+static void *budget_item;
+static LONG budget_frame;
+static DWORD budget_tick;
+static size_t budget_used;
 
 /* D2's own colour escape: 0xFF, 'c', then the colour.
  *
@@ -657,10 +676,74 @@ static const affix_entry *craft_for(void *item)
     return found;
 }
 
+static void annotate_line(wchar_t *line, int stat_id, void *item, size_t spare);
+
+/* Maps are left alone entirely. Their modifier block is gathered by PD2 into one 1024-wchar stack
+   buffer (ProjectDiablo.dll+0x2B4870, see TOOLTIP_BUDGET) that PD2's own text and BH's ranges
+   already nearly fill on a well-modded map — 859 of 1024 on the second crash dump, where the
+   budget still let 168 of ours through, because the lines that never come through this hook
+   count too. Nothing here is worth the game, so maps get nothing (user, 2026-11-21).
+
+   A map is told by its code: every PD2 map, uber map and PvP map is `t`, a digit, one more
+   character (t11 … t3b, t41, t61, t69), and no other base is. The code is the ItemsTxt record's
+   dwCode at +0x80 — the field PD2 itself compares against "wss " — and D2Common #10695 returns
+   the record for the unit's own row number. */
+typedef BYTE *(__stdcall *items_txt_fn)(DWORD item_no);
+
+static int is_map(void *item)
+{
+    static items_txt_fn items_txt;
+    static int resolved;
+    static void *last_item;
+    static int last_answer;
+
+    if (!item) return 0;
+    if (item == last_item) return last_answer;
+    if (!resolved) {
+        resolved = 1;
+        HMODULE common = GetModuleHandleA("D2Common.dll");
+        if (common) items_txt = (items_txt_fn)(void *)GetProcAddress(common, (LPCSTR)(DWORD_PTR)10695);
+        if (!items_txt) log_line("affix ranges: no D2Common #10695, so maps cannot be told apart");
+    }
+    DWORD item_no = 0;
+    char code[4] = { 0 };
+    BYTE *record = NULL;
+    int answer = 0;
+    if (items_txt && safe_read((BYTE *)item + UNITANY_TXTFILENO, &item_no, sizeof item_no)
+        && (record = items_txt(item_no)) != NULL && safe_read(record + 0x80, code, sizeof code))
+        answer = code[0] == 't' && code[1] >= '0' && code[1] <= '9';
+    static int said;
+    if (answer && !said) {
+        said = 1;
+        log_line("affix ranges: maps are left alone (first one seen: %.3s)", code);
+    }
+    last_item = item;
+    last_answer = answer;
+    return answer;
+}
+
 static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int flag)
 {
     original(line, stat_id, item, flag);
-    if (!showing()) return;
+    if (!showing() || !line || is_map(item)) return;
+
+    /* A new item, a new frame, or a pause long enough to be a new tooltip starts a new budget. */
+    DWORD now = GetTickCount();
+    if (item != budget_item || frame_serial != budget_frame || now - budget_tick > 50) {
+        budget_item = item;
+        budget_frame = frame_serial;
+        budget_used = 0;
+    }
+    budget_tick = now;
+    size_t here = wcslen(line) + 1;
+    size_t spare = budget_used + here < TOOLTIP_BUDGET ? TOOLTIP_BUDGET - budget_used - here : 0;
+    annotate_line(line, stat_id, item, spare);
+    budget_used += wcslen(line) + 1;
+}
+
+/* What this line gains: the sources of its stat, in at most `spare` more characters. */
+static void annotate_line(wchar_t *line, int stat_id, void *item, size_t spare)
+{
 #if ADDONS_DEV
     BYTE *trace_data = item ? *(BYTE **)((BYTE *)item + UNITANY_ITEMDATA) : NULL;
     if (traced < 60 && trace_data) {
@@ -710,7 +793,8 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
     int has_craft = craft && contribution(craft, stat_id, &craft_lo, &craft_hi);
     int has_corruption = corruption_for(item, stat_id, &corr_lo, &corr_hi, &corr_pct);
 
-    correct_range(line, affixes, craft_lo + corr_lo, craft_hi + corr_hi);
+    /* A corrected range can be a character or two longer; it waits for the budget like the rest. */
+    if (spare >= 8) correct_range(line, affixes, craft_lo + corr_lo, craft_hi + corr_hi);
 
     /* Built as segments that are fitted one at a time rather than assembled and then accepted
        or rejected whole. The line is a 128-wchar buffer and the colour escapes cost three
@@ -720,6 +804,9 @@ static void __stdcall on_stat_line(wchar_t *line, int stat_id, void *item, int f
     size_t at = wcslen(line);
     if (at + ESCAPE + ESCAPE + 2 > LINE_CAPACITY) return;
     size_t room = LINE_CAPACITY - at - ESCAPE - ESCAPE - 1;
+    /* And within what the tooltip as a whole has left (see TOOLTIP_BUDGET). */
+    if (spare < ESCAPE + ESCAPE + 2) return;
+    if (room > spare - ESCAPE - ESCAPE - 1) room = spare - ESCAPE - ESCAPE - 1;
 
     char suffix[192];
     size_t used = 0;

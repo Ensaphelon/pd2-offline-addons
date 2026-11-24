@@ -145,9 +145,14 @@ void calls_report(DWORD frames);
 void calls_draw_test_box(void);
 BOOL calls_watch_install(void);
 
+/* Counted on every build, not just the development one: affixes.c keeps one tooltip's budget
+   per frame and needs to know when a new frame has begun. */
+volatile LONG frame_serial;
+
 static void __stdcall our_swap(int interval)
 {
     frames++;
+    frame_serial++;
 #if ADDONS_DEV
     DWORD now = GetTickCount();
     if (now - last_report >= 5000) {

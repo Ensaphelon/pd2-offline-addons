@@ -223,8 +223,31 @@ escapes, which the first attempt got wrong and encoded as the two UTF-8 bytes of
 
 The line is a 128-wchar buffer, and three escapes cost nine characters of it. It was taken for
 130 until 2026-11-21. BH is built with /GS, though, and `[ebp-4]`, right below the saved frame
-pointer, holds its security cookie. A long line with ranges appended wrote over the cookie, and
-BH ended the game with a fail-fast (exit code `0xC0000409`, no crash report) on returning. A stat fed by three
+pointer, holds its security cookie. A line filled to the old limit would write over the cookie,
+and BH would end the game with a fail-fast (exit code `0xC0000409`, no crash report) on
+returning. This turned up while chasing silent closes with that exit code. They went on after
+the fix: they had another cause, below.
+
+The whole tooltip has a limit too. PD2 gathers a map's modifier block into one 1024-wchar stack
+buffer. Every stat line goes in, separated by newlines (ProjectDiablo.dll+0x2B4870,
+`[ebp-0x808]`, /GS cookie at `[ebp-4]`). PD2 never checks what the lines have grown to after BH
+and this plugin appended to them.
+- A map loaded with modifiers (ears add more) came to 1123 wchars, 306 of them ours. Without
+  ours it was 817.
+- Pressing Shift on it overwrote the cookie, and PD2 ended the game with a fail-fast. This was
+  read out of the crash dump's stack on 2026-11-21. These were the silent closes.
+
+So one tooltip gets one budget, `TOOLTIP_BUDGET` = 864. Every line the hook sees for the same
+item in the same frame is counted. Nothing more is appended, and no range is corrected, once the
+block would pass the budget. A new item, a new frame (`frame_serial`, counted in frame.c's buffer
+swap) or 50 ms of quiet starts a new budget.
+
+The budget was not enough for maps. On the second crash PD2's own text and BH's ranges already
+filled 859 of the 1024 wchars, and the lines that never come through the hook count too. So
+maps get nothing from this plugin at all: no sources and no corrected ranges. A map is told by
+its base code. Every PD2 map, uber map and PvP map is `t`, a digit, then one more character
+(t11 … t3b, t41, t61, t69), and no other base is. The code is read from the ItemsTxt record
+(D2Common #10695, `dwCode` at +0x80). A stat fed by three
 affixes, a craft and a corruption overruns it -- which would have lost the whole annotation on
 exactly the busiest lines, the ones worth reading.
 
