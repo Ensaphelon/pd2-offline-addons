@@ -586,15 +586,32 @@ static void run_crash_worker(EXCEPTION_POINTERS *ep)
     }
 }
 
+/* The filter that held the slot before this file first took it — Fog's, the one that writes D2's
+   own report and ends the game. */
+static LPTOP_LEVEL_EXCEPTION_FILTER first_filter;
+static volatile LONG first_called;
+
 static LONG WINAPI on_unhandled(EXCEPTION_POINTERS *ep)
 {
-    /* A filter further down that hands back to whatever it replaced can lead here again. */
-    if (InterlockedExchange(&in_crash, 1)) return EXCEPTION_CONTINUE_SEARCH;
+    /* Here again: a filter that came after us (Bnclient's, set during startup) handed back to
+       what it replaced, which was us. The chain must still reach Fog. Returning "not handled"
+       here — as this did until 2026-11-24 — left Windows' own "Application Error" box on screen
+       over a frozen game, with Fog never called and nothing in D2's log. */
+    if (InterlockedExchange(&in_crash, 1)) {
+        if (first_filter && first_filter != chained && !InterlockedExchange(&first_called, 1))
+            return first_filter(ep);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     crashed = 1;
 
     run_crash_worker(ep);
-    LPTOP_LEVEL_EXCEPTION_FILTER next = chained;
-    return next ? next(ep) : EXCEPTION_CONTINUE_SEARCH;
+    LPTOP_LEVEL_EXCEPTION_FILTER next = chained ? chained : first_filter;
+    LONG result = next ? next(ep) : EXCEPTION_CONTINUE_SEARCH;
+    /* A later filter that does not hand back: Fog still gets its turn. */
+    if (result == EXCEPTION_CONTINUE_SEARCH && first_filter && first_filter != next
+        && !InterlockedExchange(&first_called, 1))
+        result = first_filter(ep);
+    return result;
 }
 
 /* The moment before a fail-fast. MSVC's runtime asks IsProcessorFeaturePresent(
@@ -921,6 +938,11 @@ void crash_tick(void)
 
     LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(on_unhandled);
     if (previous == on_unhandled) return;
+    static int first_taken;
+    if (!first_taken) {
+        first_taken = 1;
+        first_filter = previous;
+    }
     chained = previous;
     char who[160];
     describe_address((void *)previous, who, sizeof who);
