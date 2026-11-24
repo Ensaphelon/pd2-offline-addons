@@ -15,6 +15,7 @@ expensive to rediscover:
 | Quick exit | — | Leaving a game in its first seconds no longer stalls on sounds still loading: Storm's background reader runs without Fog's 256 KB/s brake — [docs](docs/exit-stall.md) |
 | Straight to characters | — | The character screen where the main menu used to be — at launch with `-skiptobnet` (no title screen, no Battle.net logon) and on leaving a game — by pointing D2Launch's two calls at Single Player's own handler. Hold Shift to get the old behaviour — [docs](docs/charselect.md) |
 | Automap on join | — | The automap — PD2's corner mini map — open from the first frame of every game, by the game's own toggle, so its arrow-key panning works too — [docs](docs/automap.md) |
+| Pad in front only | — | PD2 reads the controller only while its window is the one in front, so a pad shared with an emulator does not play both — [docs](docs/controller-focus.md) |
 | Crash watch | — | One line per game session in `pd2addons-exits.log`: who closed the game and with what code, or the crash (with a minidump in `crashes\`), or that it vanished without a trace. The previous session's log is kept as `pd2addons.prev.log` — [docs](docs/crash-watch.md) |
 | Vendor restock | — | PD2's gamble-window refresh button and hotkey on an ordinary vendor's trade window too, restocking it the way the game's own four-minute timer does — [docs](docs/vendor-restock.md) |
 

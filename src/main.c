@@ -48,6 +48,9 @@ void affixes_reload(void);
  * store panel every tick. */
 void vendor_tick(void);
 
+/* The controller only while the game window is in front: see focus_input.c. */
+BOOL focus_input_install(void);
+
 /* Storm's background reader without Fog's 256 KB/s brake: a game left in its first seconds no
  * longer waits for sounds that were still trickling in. */
 void storm_io_tick(void);
@@ -117,6 +120,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     DWORD last_reload = GetTickCount();
     BOOL frame_hooked = FALSE;
     BOOL affixes_hooked = FALSE;
+    BOOL input_hooked = FALSE;
 
     for (;;) {
         menu_watch();
@@ -127,6 +131,9 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
         /* BH.dll is Project Diablo 2's maphack and lands after us too. */
         if (!affixes_hooked) affixes_hooked = affixes_hook_install();
+
+        /* ProjectDiablo.dll reads the pad; it is loaded by the time the D2 modules are. */
+        if (!input_hooked) input_hooked = focus_input_install();
 
         /* beam.txt is re-read while the game runs, so the light can be tuned by editing a line
          * and looking at the screen rather than by rebuilding and restarting. */

@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <stdlib.h>
 #include <string.h>
 #include "log.h"
 #include "addons.h"
@@ -195,10 +196,16 @@ void **redirect_import(HMODULE module, const char *dll, const char *symbol, void
             (base + (import->OriginalFirstThunk ? import->OriginalFirstThunk : import->FirstThunk));
         IMAGE_THUNK_DATA *address = (IMAGE_THUNK_DATA *)(base + import->FirstThunk);
         for (; lookup->u1.AddressOfData; lookup++, address++) {
-            if (IMAGE_SNAP_BY_ORDINAL(lookup->u1.Ordinal)) continue;
-            IMAGE_IMPORT_BY_NAME *by_name =
-                (IMAGE_IMPORT_BY_NAME *)(base + lookup->u1.AddressOfData);
-            if (strcmp((const char *)by_name->Name, symbol) != 0) continue;
+            /* "#2" names an import by ordinal, the way ProjectDiablo.dll takes XInputGetState. */
+            if (IMAGE_SNAP_BY_ORDINAL(lookup->u1.Ordinal)) {
+                if (symbol[0] != '#' || IMAGE_ORDINAL(lookup->u1.Ordinal) != (DWORD)atoi(symbol + 1))
+                    continue;
+            } else {
+                if (symbol[0] == '#') continue;
+                IMAGE_IMPORT_BY_NAME *by_name =
+                    (IMAGE_IMPORT_BY_NAME *)(base + lookup->u1.AddressOfData);
+                if (strcmp((const char *)by_name->Name, symbol) != 0) continue;
+            }
 
             void **slot = (void **)&address->u1.Function;
             DWORD was;
