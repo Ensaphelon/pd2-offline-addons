@@ -71,10 +71,16 @@ static terminate_process_fn real_terminate_process;
 static terminate_process_fn real_base_terminate_process;
 static nt_terminate_fn real_nt_terminate;
 static fail_fast_fn real_fail_fast;
+typedef BOOL (WINAPI *feature_fn)(DWORD);
+static feature_fn real_feature_k32, real_feature_base;
+static volatile LONG fail_fast_noted;
 static HANDLE overflow_event;
 static volatile LONG cpp_lines;
 #define CPP_LINES 20
 #define ALIVE_FILE "pd2addons.alive"
+#ifndef PF_FASTFAIL_AVAILABLE
+#define PF_FASTFAIL_AVAILABLE 23
+#endif
 static LPTOP_LEVEL_EXCEPTION_FILTER chained;
 
 static volatile LONG in_crash;
@@ -541,22 +547,122 @@ static DWORD WINAPI crash_worker(LPVOID arg)
     return 0;
 }
 
+/* Does this thread hold the loader lock? A thread started now would wait for it to run its own
+   DLL attach, so starting one and waiting on it is a deadlock until the wait gives up. */
+static BOOL holds_loader_lock(void)
+{
+    BYTE *peb = *(BYTE **)((BYTE *)NtCurrentTeb() + 0x30);
+    RTL_CRITICAL_SECTION *lock = peb ? *(RTL_CRITICAL_SECTION **)(peb + 0xA0) : NULL;
+    return lock && (DWORD)(DWORD_PTR)lock->OwningThread == GetCurrentThreadId();
+}
+
+/* The slow half of a crash report, on a thread of its own (see crash_worker). The job lives in
+   static storage, not on this stack: if the wait below gives up, the worker may still start
+   later, and on 2026-11-24 a job left on a returned stack frame was read back as garbage and
+   crashed the game on startup. One report per process is all there ever is. */
+static void run_crash_worker(EXCEPTION_POINTERS *ep)
+{
+    static struct crash_job job;
+    static EXCEPTION_RECORD record;
+    static CONTEXT context;
+    static EXCEPTION_POINTERS pointers;
+    if (holds_loader_lock()) {
+        log_line("crash: under the loader lock, so no dump (a thread could not start)");
+        return;
+    }
+    record = *ep->ExceptionRecord;
+    context = *ep->ContextRecord;
+    pointers.ExceptionRecord = &record;
+    pointers.ContextRecord = &context;
+    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+    job.ep = &pointers;
+    job.thread_id = GetCurrentThreadId();
+    job.stack_base = tib->StackBase;
+    job.stack_limit = tib->StackLimit;
+    HANDLE t = CreateThread(NULL, 0, crash_worker, &job, 0, NULL);
+    if (t) {
+        WaitForSingleObject(t, 20000);
+        CloseHandle(t);
+    }
+}
+
 static LONG WINAPI on_unhandled(EXCEPTION_POINTERS *ep)
 {
     /* A filter further down that hands back to whatever it replaced can lead here again. */
     if (InterlockedExchange(&in_crash, 1)) return EXCEPTION_CONTINUE_SEARCH;
     crashed = 1;
 
-    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
-    struct crash_job job = { ep, GetCurrentThreadId(), tib->StackBase, tib->StackLimit };
-    HANDLE t = CreateThread(NULL, 0, crash_worker, &job, 0, NULL);
-    if (t) {
-        WaitForSingleObject(t, 20000);
-        CloseHandle(t);
-    }
-
+    run_crash_worker(ep);
     LPTOP_LEVEL_EXCEPTION_FILTER next = chained;
     return next ? next(ep) : EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* The moment before a fail-fast. MSVC's runtime asks IsProcessorFeaturePresent(
+   PF_FASTFAIL_AVAILABLE) on each of its fatal paths — a failed /GS cookie (__report_gsfailure),
+   abort(), an invalid parameter — and then executes `int 0x29`, which no handler ever sees. The
+   question is the last moment anything can be written down, so it is answered by writing:
+   which module asked, the stack (whose return addresses include the function whose cookie
+   failed), and a dump with this thread's own context. The error modes are cleared too, the
+   thread's as well as the process's, so Windows' own report is not suppressed either.
+
+   2026-11-21: after the BH buffer fix the game still closed with 0xC0000409, and nothing so far
+   could name the module.
+
+   Not every caller is about to die, though: VCRUNTIME140 asks the same question at startup
+   (+0x176E7, a capability check that goes on to `mov eax,1`), and on 2026-11-24 treating that as
+   a fail-fast stalled the start for 20 seconds and then crashed it. A real fail-fast site runs
+   `int 0x29` (CD 29) within a few bytes of the call — __report_gsfailure, abort() and
+   _invoke_watson all do `test eax,eax / je / push n / pop ecx / int 0x29` — so only a caller
+   whose next bytes hold it counts. */
+static BOOL readable(const void *p, size_t n);
+
+static BOOL fail_fast_site(const BYTE *caller)
+{
+    if (!readable(caller, 16)) return FALSE;
+    for (int i = 0; i + 1 < 16; i++)
+        if (caller[i] == 0xCD && caller[i + 1] == 0x29) return TRUE;
+    return FALSE;
+}
+
+static void note_fail_fast(void *caller)
+{
+    if (!fail_fast_site((const BYTE *)caller)) return;
+    if (InterlockedExchange(&fail_fast_noted, 1) || crashed) return;
+    SetThreadErrorMode(0, NULL);
+    SetErrorMode(GetErrorMode() & ~SEM_NOGPFAULTERRORBOX);
+
+    char from[160];
+    describe_address(caller, from, sizeof from);
+    log_line("crash: a fail-fast was asked for by %s — writing down what is known before it lands",
+             from);
+    crashed = 1;
+
+    CONTEXT context;
+    memset(&context, 0, sizeof context);
+    RtlCaptureContext(&context);
+    EXCEPTION_RECORD record;
+    memset(&record, 0, sizeof record);
+    record.ExceptionCode = 0xC0000409;
+    record.ExceptionAddress = caller;
+    EXCEPTION_POINTERS pointers = { &record, &context };
+    run_crash_worker(&pointers);
+}
+
+__attribute__((noinline))
+static BOOL WINAPI on_feature_k32(DWORD feature)
+{
+    if (feature == PF_FASTFAIL_AVAILABLE) note_fail_fast(__builtin_return_address(0));
+    return real_feature_k32(feature);
+}
+
+__attribute__((noinline))
+static BOOL WINAPI on_feature_base(DWORD feature)
+{
+    /* Reached straight by api-set imports, and by kernel32's own stub after on_feature_k32 —
+       whose caller is plumbing, and the note is taken once anyway. */
+    if (feature == PF_FASTFAIL_AVAILABLE && !is_plumbing(module_of(__builtin_return_address(0))))
+        note_fail_fast(__builtin_return_address(0));
+    return real_feature_base(feature);
 }
 
 /* Readable memory, asked of the memory manager rather than found out by faulting. */
@@ -763,6 +869,13 @@ void crash_init(void)
         resolve_export("ntdll.dll", "NtTerminateProcess"), (void *)on_nt_terminate);
     real_fail_fast = (fail_fast_fn)hotpatch(
         resolve_export("kernelbase.dll", "RaiseFailFastException"), (void *)on_fail_fast);
+    /* kernel32's stub first, resolved without following its jump: modules import it from there. */
+    real_feature_k32 = (feature_fn)hotpatch(
+        (BYTE *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "IsProcessorFeaturePresent"),
+        (void *)on_feature_k32);
+    real_feature_base = (feature_fn)hotpatch(
+        (BYTE *)GetProcAddress(GetModuleHandleA("kernelbase.dll"), "IsProcessorFeaturePresent"),
+        (void *)on_feature_base);
 }
 
 /* Re-takes the unhandled-exception slot; whatever held it is called after us. Once a second
@@ -880,6 +993,9 @@ void crash_start(void)
              real_base_terminate_process ? "hooked" : "NOT hooked",
              real_nt_terminate ? "hooked" : "NOT hooked",
              real_fail_fast ? "hooked" : "NOT hooked");
+    log_line("crashwatch: IsProcessorFeaturePresent (the runtime's last call before a fail-fast) "
+             "%s in kernel32, %s in kernelbase",
+             real_feature_k32 ? "hooked" : "NOT hooked", real_feature_base ? "hooked" : "NOT hooked");
     overflow_event = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (overflow_event) {
         HANDLE watch = CreateThread(NULL, 0, overflow_watch, NULL, 0, NULL);

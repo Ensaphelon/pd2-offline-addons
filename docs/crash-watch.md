@@ -61,6 +61,22 @@ vanished still says roughly when it died.
     kernel), a stack overflow with no room left to report it, and a kill from another process.
     The same day showed that Windows does not reliably write these down either. A test
     `int 0x29` left no WER report and no Application Error.
+- **The moment before a fail-fast.** MSVC's runtime calls
+  `IsProcessorFeaturePresent(PF_FASTFAIL_AVAILABLE)` on each of its fatal paths: a failed /GS
+  cookie, `abort()` and an invalid parameter. It then runs `int 0x29`, which no handler sees.
+  - Both kernel32's export and kernelbase's are hooked. On feature 23 the hook writes down which
+    module asked, logs the stack and writes a dump with the thread's own captured context.
+  - The stack holds the return address into the function whose cookie failed.
+  - The hook also clears the thread's error mode and the process's, so Windows' own report goes
+    through as well.
+  - Added on 2026-11-21, after a `0xC0000409` that the BH buffer fix did not stop.
+  - Only a call followed within 16 bytes by `int 0x29` (`CD 29`) counts. VCRUNTIME140 asks the
+    same question at startup as a plain capability check (+0x176E7). On 2026-11-24, taking that
+    for a fail-fast stalled the start for 20 seconds: a thread was started under the loader lock
+    and waited on. The worker then crashed the game, because its job had been left on a stack
+    frame that had already returned.
+  - The report's job now lives in static storage, and no worker is started while the thread holds
+    the loader lock.
 - **The exit code, from outside.** `pd2watch.exe` beside the DLL (`tools/pd2watch.c`) waits for
   the game to end and reads its exit code. Three codes tell the endings above apart:
   `0xC0000409` for a fail-fast, `0xC00000FD` for a stack overflow, and `1` for a `taskkill /F`.
