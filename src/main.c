@@ -51,6 +51,9 @@ void vendor_tick(void);
 /* The controller only while the game window is in front: see focus_input.c. */
 BOOL focus_input_install(void);
 
+/* An object with no data is answered with 0 instead of crashed on: see object_guard.c. */
+void object_guard_install(void);
+
 /* Storm's background reader without Fog's 256 KB/s brake: a game left in its first seconds no
  * longer waits for sounds that were still trickling in. */
 void storm_io_tick(void);
@@ -109,6 +112,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     log_line("D2Client base %p", (void *)d2.d2client);
 
     menu_install();
+    object_guard_install();
     beam_init(module);
     records_init(module);
     affixes_init(module);
