@@ -54,6 +54,14 @@ BOOL focus_input_install(void);
 /* An object with no data is answered with 0 instead of crashed on: see object_guard.c. */
 void object_guard_install(void);
 
+/* Crafting from the item, on the server: see craft.c. */
+BOOL craft_install(void);
+
+/* A flight recorder for the controller, on when pad-trace.cfg says so: see pad_trace.c. */
+void pad_trace_init(void *module);
+BOOL pad_trace_install(void);
+void pad_trace_tick(void);
+
 /* Storm's background reader without Fog's 256 KB/s brake: a game left in its first seconds no
  * longer waits for sounds that were still trickling in. */
 void storm_io_tick(void);
@@ -116,6 +124,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     beam_init(module);
     records_init(module);
     affixes_init(module);
+    pad_trace_init(module);
     beam_reload();
 #if ADDONS_DEV
     probe_init(module);
@@ -125,6 +134,8 @@ static DWORD WINAPI bootstrap(LPVOID module)
     BOOL frame_hooked = FALSE;
     BOOL affixes_hooked = FALSE;
     BOOL input_hooked = FALSE;
+    BOOL trace_hooked = FALSE;
+    BOOL craft_hooked = FALSE;
 
     for (;;) {
         menu_watch();
@@ -138,6 +149,9 @@ static DWORD WINAPI bootstrap(LPVOID module)
 
         /* ProjectDiablo.dll reads the pad; it is loaded by the time the D2 modules are. */
         if (!input_hooked) input_hooked = focus_input_install();
+        if (!trace_hooked) trace_hooked = pad_trace_install();
+        if (!craft_hooked) craft_hooked = craft_install();
+        pad_trace_tick();
 
         /* beam.txt is re-read while the game runs, so the light can be tuned by editing a line
          * and looking at the screen rather than by rebuilding and restarting. */
