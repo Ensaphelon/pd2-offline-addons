@@ -43,13 +43,16 @@ static BOOL game_in_front(void)
 
 /* pad_trace.c records what the pad said, and whether the game was given it. */
 void pad_trace_xinput(DWORD user, DWORD result, const XINPUT_STATE *state, BOOL gated);
+/* item_menu.c has the pad to itself while it is open (and takes the LB that opens it). */
+BOOL item_menu_pad(XINPUT_STATE *state);
 
 static DWORD WINAPI on_get_state(DWORD user, XINPUT_STATE *state)
 {
     DWORD result = real_get_state(user, state);
     BOOL gated = result == ERROR_SUCCESS && state && !game_in_front();
     pad_trace_xinput(user, result, state, gated);
-    if (gated) ZeroMemory(&state->Gamepad, sizeof state->Gamepad);
+    if (gated || (result == ERROR_SUCCESS && state && item_menu_pad(state)))
+        ZeroMemory(&state->Gamepad, sizeof state->Gamepad);
     return result;
 }
 

@@ -54,8 +54,9 @@ BOOL focus_input_install(void);
 /* An object with no data is answered with 0 instead of crashed on: see object_guard.c. */
 void object_guard_install(void);
 
-/* Crafting from the item, on the server: see craft.c. */
+/* Crafting from the item, on the server: see craft.c; and its menu, item_menu.c. */
 BOOL craft_install(void);
+BOOL item_menu_install(void);
 
 /* A flight recorder for the controller, on when pad-trace.cfg says so: see pad_trace.c. */
 void pad_trace_init(void *module);
@@ -136,6 +137,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
     BOOL input_hooked = FALSE;
     BOOL trace_hooked = FALSE;
     BOOL craft_hooked = FALSE;
+    BOOL menu_ready = FALSE;
 
     for (;;) {
         menu_watch();
@@ -151,6 +153,7 @@ static DWORD WINAPI bootstrap(LPVOID module)
         if (!input_hooked) input_hooked = focus_input_install();
         if (!trace_hooked) trace_hooked = pad_trace_install();
         if (!craft_hooked) craft_hooked = craft_install();
+        if (!menu_ready) menu_ready = item_menu_install();
         pad_trace_tick();
 
         /* beam.txt is re-read while the game runs, so the light can be tuned by editing a line

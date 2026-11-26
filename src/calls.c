@@ -37,7 +37,51 @@ static volatile LONG last_index = -1;
 /* Which call was last in the PREVIOUS frame — so the draw goes out after everything the game
    itself drew, without anyone having to guess which ordinal that is. */
 static volatile LONG draw_on = -1;
+/* The item menu's: the last call of the previous frame, and the frame it was last drawn in. */
+static volatile LONG menu_on = -1;
+static LONG menu_frame;
+extern volatile LONG frame_serial;
+
+/* One frame of the cell draws near the mouse, while the item menu is open: which call puts the
+   cursor on screen, and from where. The menu has to go out before it — D2GL lays rectangles
+   over what was drawn earlier, the cursor included (2026-11-26). */
+BOOL item_menu_open(void);
+void item_menu_cursor_again(void *context, int x, int y);
+void item_menu_mouse(int *x, int *y);
+static volatile LONG trace_near_mouse;
+static LONG frame_calls;
+/* The cursor's own call was seen in the frame being drawn / in the one before. */
+static LONG cursor_now, cursor_before;
+void calls_trace_near_mouse(void) { InterlockedExchange(&trace_near_mouse, 2); }
+
+static void trace_call(int index, const DWORD *args)
+{
+    int mx, my;
+    item_menu_mouse(&mx, &my);
+    int x = (int)args[2], y = (int)args[3];
+    if (x < mx - 80 || x > mx + 80 || y < my - 80 || y > my + 120) return;
+    const BYTE *context = (const BYTE *)(UINT_PTR)args[1];
+    DWORD w = 0, hgt = 0;
+    const void *file = NULL;
+    if (context && !IsBadReadPtr(context, 0x44)) {
+        file = *(const void *const *)(context + 0x34);
+        if (file && !IsBadReadPtr(file, 0x1C)) {
+            const BYTE *cell = *(const BYTE *const *)((const BYTE *)file + 0x18);
+            if (cell && !IsBadReadPtr(cell, 0x0C)) { w = *(const DWORD *)(cell + 4); hgt = *(const DWORD *)(cell + 8); }
+        }
+    }
+    HMODULE from = NULL;
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)(UINT_PTR)args[0], &from) && from)
+        GetModuleFileNameA(from, name, MAX_PATH);
+    const char *base = strrchr(name, '\\');
+    log_line("menu trace: call %ld  D2gfx #%u at (%d,%d), mouse (%d,%d), cell %lux%lu file %p, from %s+0x%lX",
+             frame_calls, ordinals[index], x, y, mx, my, (unsigned long)w, (unsigned long)hgt, file,
+             base ? base + 1 : name, (unsigned long)(args[0] - (DWORD)(UINT_PTR)from));
+}
 void beam_draw(void);
+void item_menu_draw(void);
 int beam_capturing(void);
 void beam_inspect(int ordinal, const DWORD *args);
 int beam_tracing(void);
@@ -217,6 +261,8 @@ void __cdecl calls_at(int index, const DWORD *args)
 {
     last_index = index;
     if (index < 0 || index >= hook_count) return;
+    frame_calls++;
+    if (trace_near_mouse == 1 && item_menu_open()) trace_call(index, args);
     if (beam_capturing()) beam_inspect(ordinals[index], args);
     if (beam_tracing()) beam_trace(ordinals[index]);
 
@@ -226,6 +272,41 @@ void __cdecl calls_at(int index, const DWORD *args)
         int wanted = beam_draw_on();
         if (wanted ? ordinals[index] == wanted : index == draw_on) beam_draw();
     }
+
+    /* The item menu goes out on the frame's LAST call, after the panels: drawn where the light
+       is, at #10054, its pictures were painted over by the inventory drawn after them — while its
+       text and boxes still showed, D2GL putting those on top regardless (2026-11-26). Once a
+       frame, on the call that came last in the frame before. */
+    /* Better still, just before the cursor, so it lands on top of the menu: D2Client draws it with
+       D2gfx #10041 at the mouse, from +0x168FC, as the frame's very last call (traced 2026-11-26,
+       call 10394 of 10395). The slot of the last call is not enough — #10041 is called earlier
+       in the frame too, and the first of those came before the cursor. */
+    BOOL cursor = FALSE;
+    if (ordinals[index] == 10041 && item_menu_open()) {
+        int mx, my;
+        item_menu_mouse(&mx, &my);
+        cursor = (int)args[2] == mx && (int)args[3] == my;
+        if (cursor) cursor_now = 1;
+    }
+    BOOL old_point = !cursor_before || !item_menu_open();
+    if (menu_frame != frame_serial && ((cursor && !old_point) || (old_point && index == menu_on))) {
+        menu_frame = frame_serial;
+        item_menu_draw();
+    }
+    /* And the cursor once more, over the menu, from the game's own call: see item_menu.c. */
+    if (cursor) item_menu_cursor_again((void *)(UINT_PTR)args[1], (int)args[2], (int)args[3]);
+}
+
+/* From the frame hook, every build: which call was the last one of the frame just drawn. */
+void calls_frame_done(void)
+{
+    menu_on = last_index;
+    cursor_before = cursor_now;
+    cursor_now = 0;
+    /* 2: armed; the frame being drawn now is the one to trace (1); then done (0). */
+    if (trace_near_mouse == 1) log_line("menu trace: %ld calls in that frame", frame_calls);
+    if (trace_near_mouse > 0) InterlockedDecrement(&trace_near_mouse);
+    frame_calls = 0;
 }
 
 /* ---------------------------------------------------------------------------------------- */

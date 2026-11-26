@@ -1,23 +1,10 @@
 # Craft from the item
 
-You point at a magic item, pick a recipe, and the crafted item lies where the magic one lay. The ingredients come from wherever they are: the inventory, the cube, or PD2's material tab. You do not have to walk to the stash.
+You point at a magic or rare item, pick a recipe, and the crafted item lies where the first one lay. The ingredients come from wherever they are: the inventory, the cube, or PD2's material tab. You do not have to walk to the stash.
 
-For now the trigger is a hotkey while hovering over the item:
+The recipe is picked from the [item menu](item-menu.md): LB or ~ over the item.
 
-| Keys | Action |
-|---|---|
-| Ctrl+Alt+1 | Blood |
-| Ctrl+Alt+2 | Caster |
-| Ctrl+Alt+3 | Hitpower |
-| Ctrl+Alt+4 | Safety |
-| Ctrl+Alt+5 | Brilliant |
-| Ctrl+Alt+6 | Bountiful |
-| Ctrl+Alt+7 | Vampiric |
-| Ctrl+Alt+8 | Corrupt (Worldstone Shard) |
-
-A context menu (LB, or ~) will replace the hotkeys. Until it does, keys 1–4 are also D2's belt keys, so a press can drink a potion as well.
-
-The recipes come from `craft.txt` beside the DLL. That file maps a base item code to a category, and a category and family to a rune and a gem. `tools/make_craft_table.py` writes it from pd2-holy-inventory's Craft Center catalog. Weapons are not in that catalog yet.
+The recipes come from `craft.txt` beside the DLL. That file maps a base item code to a category, and a category and family to a rune and a gem. `tools/make_craft_table.py` writes it from pd2-holy-inventory's Craft Center catalog, and the weapons and quivers, which the catalog leaves out, straight from the game's CubeMain, Weapons and ItemTypes tables in `pd2data.mpq`.
 
 ## Requirements
 

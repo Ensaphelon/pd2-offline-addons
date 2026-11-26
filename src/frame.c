@@ -142,7 +142,7 @@ static DWORD last_report;
 
 void frame_tick(void);   /* what we actually want to do each frame; see probe.c */
 void pad_trace_frame(void);   /* the cursor, the player and PD2's controller state; pad_trace.c */
-void craft_frame(void);       /* the craft hotkey, sent from the game's own thread; craft.c */
+void calls_frame_done(void);  /* the frame's last draw call, where the item menu goes; calls.c */
 void automap_frame(void);   /* opens the automap on joining; needs the game's own thread */
 void calls_report(DWORD frames);
 void calls_draw_test_box(void);
@@ -174,7 +174,7 @@ static void __stdcall our_swap(int interval)
 #endif
     automap_frame();
     pad_trace_frame();
-    craft_frame();
+    calls_frame_done();
     if (original_swap) original_swap(interval);
 }
 
